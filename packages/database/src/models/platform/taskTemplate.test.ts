@@ -212,3 +212,66 @@ describe('PlatformTaskTemplateModel.importByIdentifier', () => {
     expect((await model.list({ limit: 1, offset: 0 })).items[0]?.title).toBe('Custom zh-CN');
   });
 });
+
+describe('PlatformTaskTemplateModel list / count', () => {
+  const document = (
+    overrides: Partial<Parameters<PlatformTaskTemplateModel['create']>[0]['document']> = {},
+  ) => ({
+    category: 'engineering' as const,
+    connectors: [] as { identifier: string; required: boolean; source: 'lobehub' }[],
+    cronPattern: '0 9 * * *',
+    description: '',
+    enabled: true,
+    icon: null,
+    instruction: 'Keep me.',
+    interests: ['coding'],
+    title: 'Custom',
+    ...overrides,
+  });
+
+  const create = (overrides: { identifier: string; title: string }) =>
+    model.create({
+      actorUserId: 'admin-a',
+      document: document({ title: overrides.title }),
+      id: crypto.randomUUID(),
+      identifier: overrides.identifier,
+      source: 'manual',
+    });
+
+  it('ORs identifiers into the query filter so list and count stay aligned', async () => {
+    await create({ identifier: 'alpha', title: 'Alpha report' });
+    await create({ identifier: 'beta', title: 'Beta report' });
+
+    const missed = await model.list({
+      identifiers: ['alpha'],
+      limit: 20,
+      offset: 0,
+      query: 'does-not-match-stored-text',
+    });
+    expect(missed.items.map((row) => row.identifier)).toEqual(['alpha']);
+    expect(missed.total).toBe(1);
+    expect(await model.count({ identifiers: ['alpha'], query: 'does-not-match-stored-text' })).toBe(
+      1,
+    );
+
+    const combined = await model.list({
+      identifiers: ['alpha'],
+      limit: 20,
+      offset: 0,
+      query: 'beta',
+    });
+    expect(combined.items.map((row) => row.identifier).toSorted()).toEqual(['alpha', 'beta']);
+    expect(combined.total).toBe(2);
+    expect(await model.count({ identifiers: ['alpha'], query: 'beta' })).toBe(2);
+
+    const emptyIds = await model.list({
+      identifiers: [],
+      limit: 20,
+      offset: 0,
+      query: 'does-not-match-stored-text',
+    });
+    expect(emptyIds.items).toEqual([]);
+    expect(emptyIds.total).toBe(0);
+    expect(await model.count({ identifiers: [], query: 'does-not-match-stored-text' })).toBe(0);
+  });
+});

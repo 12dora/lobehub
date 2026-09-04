@@ -65,10 +65,21 @@ export interface PlatformTaskTemplateDocument {
 
 export interface PlatformTaskTemplateListParams {
   enabled?: boolean;
+  /**
+   * Extra identifier matches ORed into the query filter so a locale overlay can find rows whose
+   * stored title/description no longer contain the operator's search string.
+   * Absent or empty: existing text filter only.
+   */
+  identifiers?: string[];
   limit: number;
   offset: number;
   query?: string;
 }
+
+export type PlatformTaskTemplateCountParams = Pick<
+  PlatformTaskTemplateListParams,
+  'enabled' | 'identifiers' | 'query'
+>;
 
 export interface PlatformTaskTemplateListResult {
   items: PlatformTaskTemplateRecord[];
@@ -123,6 +134,31 @@ const isUniqueViolation = (error: unknown): boolean => {
   });
 };
 
+const listWhere = (params: PlatformTaskTemplateCountParams): SQL | undefined => {
+  const filters: SQL[] = [];
+  if (params.enabled !== undefined) {
+    filters.push(eq(platformTaskTemplates.enabled, params.enabled));
+  }
+  const trimmed = params.query?.trim();
+  const identifierMatch =
+    params.identifiers && params.identifiers.length > 0
+      ? inArray(platformTaskTemplates.identifier, params.identifiers)
+      : undefined;
+  if (trimmed) {
+    const pattern = likeContains(trimmed);
+    const textMatch = or(
+      ilike(platformTaskTemplates.title, pattern),
+      ilike(platformTaskTemplates.identifier, pattern),
+      ilike(platformTaskTemplates.description, pattern),
+    );
+    const matched = identifierMatch ? or(textMatch, identifierMatch) : textMatch;
+    if (matched) filters.push(matched);
+  } else if (identifierMatch) {
+    filters.push(identifierMatch);
+  }
+  return filters.length > 0 ? and(...filters) : undefined;
+};
+
 const toRecord = (row: typeof platformTaskTemplates.$inferSelect): PlatformTaskTemplateRecord => ({
   category: row.category,
   connectors: row.connectors ?? [],
@@ -155,11 +191,15 @@ export class PlatformTaskTemplateModel {
     this.db = db;
   }
 
-  /** Total row count regardless of `enabled`. Zero is a valid empty catalog once seeded. */
-  count = async (): Promise<number> => {
+  /**
+   * Row count. Called with no args this is the unfiltered catalog size (`totalAll`).
+   * The same optional filters as {@link list} (minus pagination) produce a filtered count.
+   */
+  count = async (params: PlatformTaskTemplateCountParams = {}): Promise<number> => {
     const [row] = await this.db
       .select({ value: sql<number>`count(*)::int` })
-      .from(platformTaskTemplates);
+      .from(platformTaskTemplates)
+      .where(listWhere(params));
     return row?.value ?? 0;
   };
 
@@ -181,21 +221,7 @@ export class PlatformTaskTemplateModel {
   list = async (
     params: PlatformTaskTemplateListParams,
   ): Promise<PlatformTaskTemplateListResult> => {
-    const filters: SQL[] = [];
-    if (params.enabled !== undefined) {
-      filters.push(eq(platformTaskTemplates.enabled, params.enabled));
-    }
-    const trimmed = params.query?.trim();
-    if (trimmed) {
-      const pattern = likeContains(trimmed);
-      const matched = or(
-        ilike(platformTaskTemplates.title, pattern),
-        ilike(platformTaskTemplates.identifier, pattern),
-        ilike(platformTaskTemplates.description, pattern),
-      );
-      if (matched) filters.push(matched);
-    }
-    const where = filters.length > 0 ? and(...filters) : undefined;
+    const where = listWhere(params);
 
     const [rows, [totalRow]] = await Promise.all([
       this.db

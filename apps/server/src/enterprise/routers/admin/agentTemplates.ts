@@ -37,7 +37,10 @@ import {
 import { isModuleEnabled } from '../../services/moduleSettings';
 import { PlatformAuditService } from '../../services/platformAudit';
 import { ensureAgentTemplateCatalogSeeded } from '../../services/templateCatalogBootstrap';
-import { overlayAgentTemplateLocale } from '../../services/templateCatalogLocalization';
+import {
+  matchingCatalogIdentifiers,
+  overlayAgentTemplateLocale,
+} from '../../services/templateCatalogLocalization';
 import {
   deriveAgentTemplateIdentifier,
   fetchBuiltInAgentTemplatesForImport,
@@ -256,9 +259,13 @@ export const adminAgentTemplatesRouter = router({
       }
 
       const model = new PlatformAgentTemplateModel(ctx.serverDB);
+      const identifiers = input.query
+        ? matchingCatalogIdentifiers('agent', input.locale, input.query)
+        : undefined;
       const totalAll = await model.count();
       const page = await model.list({
         enabled: input.enabled,
+        identifiers,
         limit: input.limit,
         offset: input.offset,
         query: input.query,

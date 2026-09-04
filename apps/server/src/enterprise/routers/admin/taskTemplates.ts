@@ -37,7 +37,10 @@ import {
 import { isModuleEnabled } from '../../services/moduleSettings';
 import { PlatformAuditService } from '../../services/platformAudit';
 import { ensureTaskTemplateCatalogSeeded } from '../../services/templateCatalogBootstrap';
-import { overlayTaskTemplateLocale } from '../../services/templateCatalogLocalization';
+import {
+  matchingCatalogIdentifiers,
+  overlayTaskTemplateLocale,
+} from '../../services/templateCatalogLocalization';
 import {
   deriveTaskTemplateIdentifier,
   fetchLibraryTaskTemplatesForImport,
@@ -270,9 +273,13 @@ export const adminTaskTemplatesRouter = router({
       }
 
       const model = new PlatformTaskTemplateModel(ctx.serverDB);
+      const identifiers = input.query
+        ? matchingCatalogIdentifiers('task', input.locale, input.query)
+        : undefined;
       const totalAll = await model.count();
       const page = await model.list({
         enabled: input.enabled,
+        identifiers,
         limit: input.limit,
         offset: input.offset,
         query: input.query,

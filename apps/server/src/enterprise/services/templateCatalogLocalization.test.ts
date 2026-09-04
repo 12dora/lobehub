@@ -9,6 +9,7 @@ import { TASK_TEMPLATE_LIBRARY } from '@/server/services/taskTemplate/library';
 
 import { builtInAgentTemplatesForLocale } from '../routers/admin/builtInAgentTemplates';
 import {
+  matchingCatalogIdentifiers,
   overlayAgentTemplateLocale,
   overlayTaskTemplateLocale,
 } from './templateCatalogLocalization';
@@ -169,6 +170,27 @@ describe('overlayAgentTemplateLocale', () => {
     });
     const rows = [row];
     expect(overlayAgentTemplateLocale(rows, 'en-US')).toBe(rows);
+  });
+});
+
+describe('matchingCatalogIdentifiers', () => {
+  it('returns agent identifiers whose zh-CN title contains the query, case-insensitive', () => {
+    expect(matchingCatalogIdentifiers('agent', 'zh-CN', zhAgent.title)).toContain(
+      enAgent.identifier,
+    );
+    expect(matchingCatalogIdentifiers('agent', 'en-US', enAgent.title.toUpperCase())).toContain(
+      enAgent.identifier,
+    );
+  });
+
+  it('returns task identifiers whose zh-CN title or description contains the query', () => {
+    expect(matchingCatalogIdentifiers('task', 'zh-CN', zhTask.title)).toEqual([taskIdentifier]);
+    expect(matchingCatalogIdentifiers('task', 'zh-CN', '良率数据对照')).toEqual([taskIdentifier]);
+  });
+
+  it('returns nothing for an unknown query or a blank query', () => {
+    expect(matchingCatalogIdentifiers('agent', 'zh-CN', 'zzz-no-such-catalog-phrase')).toEqual([]);
+    expect(matchingCatalogIdentifiers('task', 'en-US', '   ')).toEqual([]);
   });
 });
 

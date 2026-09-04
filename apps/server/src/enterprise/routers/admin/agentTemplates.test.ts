@@ -701,6 +701,46 @@ describe('admin.agentTemplates list auto-seed', () => {
     expect(stored?.title).toBe(en.title);
     expect(stored?.systemRole).toBe(en.systemRole);
   });
+
+  it('finds an English-stored built-in row when searching its Chinese catalog text', async () => {
+    const en = builtInAgentTemplatesForLocale('en-US')[0]!;
+    const zh = builtInAgentTemplatesForLocale('zh-CN')[0]!;
+    expect(zh.title).not.toBe(en.title);
+
+    await db.insert(platformAgentTemplates).values({
+      description: en.description,
+      enabled: true,
+      id: 'seeded-en-search',
+      identifier: en.identifier,
+      revision: 1,
+      source: 'builtin',
+      systemRole: en.systemRole,
+      title: en.title,
+    });
+
+    const caller = await adminCaller();
+    const searched = await caller.list({
+      limit: 20,
+      locale: 'zh-CN',
+      offset: 0,
+      query: zh.title,
+    });
+    expect(searched.items).toHaveLength(1);
+    expect(searched.items[0]?.identifier).toBe(en.identifier);
+    expect(searched.items[0]?.title).toBe(zh.title);
+    expect(searched.totalFiltered).toBe(1);
+    expect(searched.totalAll).toBe(1);
+
+    const unknown = await caller.list({
+      limit: 20,
+      locale: 'zh-CN',
+      offset: 0,
+      query: 'zzz-no-such-catalog-phrase',
+    });
+    expect(unknown.items).toEqual([]);
+    expect(unknown.totalFiltered).toBe(0);
+    expect(unknown.totalAll).toBe(1);
+  });
 });
 
 describe('unrenderable rows (empty title / system role written before validation)', () => {

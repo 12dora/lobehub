@@ -779,6 +779,38 @@ describe('admin.taskTemplates list auto-seed', () => {
     expect(stored?.title).toBe(en.title);
     expect(stored?.instruction).toBe(en.instruction);
   });
+
+  it('finds an English-stored library row when searching its Chinese catalog text', async () => {
+    const en = listTaskTemplateLibrary('en-US')[0]!;
+    const zh = listTaskTemplateLibrary('zh-CN')[0]!;
+    expect(zh.title).not.toBe(en.title);
+    listDailyRecommendSpy.mockResolvedValue([en]);
+
+    const caller = await adminCaller();
+    await caller.list({ limit: 20, locale: 'en-US', offset: 0 });
+
+    const searched = await caller.list({
+      limit: 20,
+      locale: 'zh-CN',
+      offset: 0,
+      query: zh.title,
+    });
+    expect(searched.items).toHaveLength(1);
+    expect(searched.items[0]?.identifier).toBe(en.identifier);
+    expect(searched.items[0]?.title).toBe(zh.title);
+    expect(searched.totalFiltered).toBe(1);
+    expect(searched.totalAll).toBe(1);
+
+    const unknown = await caller.list({
+      limit: 20,
+      locale: 'zh-CN',
+      offset: 0,
+      query: 'zzz-no-such-catalog-phrase',
+    });
+    expect(unknown.items).toEqual([]);
+    expect(unknown.totalFiltered).toBe(0);
+    expect(unknown.totalAll).toBe(1);
+  });
 });
 
 describe('retired connectors (a provider removed from the catalogs after the row was written)', () => {

@@ -139,6 +139,43 @@ const overlayOneTask = (
   return row;
 };
 
+export type TemplateCatalogKind = 'agent' | 'task';
+
+const catalogTextContainsQuery = (text: { description: string; title: string }, query: string) => {
+  const needle = query.toLowerCase();
+  return (
+    text.title.toLowerCase().includes(needle) || text.description.toLowerCase().includes(needle)
+  );
+};
+
+/**
+ * Identifiers whose **target-locale** catalog title or description contains `query`
+ * (case-insensitive). Used so admin search can find built-in rows whose stored text is still
+ * another locale — the DB `ILIKE` cannot see the overlaid copy.
+ *
+ * Empty / whitespace queries yield no identifiers. Does not consult stored rows or other locales.
+ */
+export const matchingCatalogIdentifiers = (
+  kind: TemplateCatalogKind,
+  locale: string | undefined,
+  query: string,
+): string[] => {
+  const needle = query.trim();
+  if (!needle) return [];
+
+  const requested = resolveRequestedLocale(locale);
+  const catalog =
+    kind === 'agent'
+      ? agentCatalogFor(resolveBuiltInAgentTemplateLocale(requested))
+      : taskCatalogFor(resolveTaskTemplateLibraryLocale(requested));
+
+  const matches: string[] = [];
+  for (const [identifier, text] of catalog) {
+    if (catalogTextContainsQuery(text, needle)) matches.push(identifier);
+  }
+  return matches;
+};
+
 /**
  * Read-time locale overlay for untouched built-in agent templates.
  *

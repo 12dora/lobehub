@@ -1,5 +1,7 @@
 'use client';
 
+import i18n from 'i18next';
+
 import { adminAgentTemplatesService } from '@/enterprise/client/services/adminAgentTemplates';
 
 import type { AdminAgentTemplateItem, AdminAgentTemplateListOutput } from './types';
@@ -21,6 +23,7 @@ export const AGENT_TEMPLATE_RECOVERY_SCAN_LIMIT = 100;
 
 export type AgentTemplateListReader = (input: {
   limit: number;
+  locale?: string;
   offset: number;
   query: string;
 }) => Promise<AdminAgentTemplateListOutput>;
@@ -47,6 +50,7 @@ export const reloadAgentTemplate = async (
   try {
     page = await list({
       limit: AGENT_TEMPLATE_RECOVERY_SCAN_LIMIT,
+      locale: i18n.resolvedLanguage || i18n.language,
       offset: 0,
       query: stale.identifier,
     });

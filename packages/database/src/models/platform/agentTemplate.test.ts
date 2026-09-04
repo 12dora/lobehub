@@ -113,6 +113,43 @@ describe('PlatformAgentTemplateModel', () => {
     expect((await model.listEnabled(10)).map((row) => row.title)).toEqual(['Alpha report']);
   });
 
+  it('ORs identifiers into the query filter so list and count stay aligned', async () => {
+    await create({ identifier: 'alpha', document: { title: 'Alpha report' } });
+    await create({ identifier: 'beta', document: { title: 'Beta report' } });
+
+    const missed = await model.list({
+      identifiers: ['alpha'],
+      limit: 20,
+      offset: 0,
+      query: 'does-not-match-stored-text',
+    });
+    expect(missed.items.map((row) => row.identifier)).toEqual(['alpha']);
+    expect(missed.total).toBe(1);
+    expect(await model.count({ identifiers: ['alpha'], query: 'does-not-match-stored-text' })).toBe(
+      1,
+    );
+
+    const combined = await model.list({
+      identifiers: ['alpha'],
+      limit: 20,
+      offset: 0,
+      query: 'beta',
+    });
+    expect(combined.items.map((row) => row.identifier).toSorted()).toEqual(['alpha', 'beta']);
+    expect(combined.total).toBe(2);
+    expect(await model.count({ identifiers: ['alpha'], query: 'beta' })).toBe(2);
+
+    const emptyIds = await model.list({
+      identifiers: [],
+      limit: 20,
+      offset: 0,
+      query: 'does-not-match-stored-text',
+    });
+    expect(emptyIds.items).toEqual([]);
+    expect(emptyIds.total).toBe(0);
+    expect(await model.count({ identifiers: [], query: 'does-not-match-stored-text' })).toBe(0);
+  });
+
   it('caps listEnabled at the requested limit', async () => {
     for (let index = 0; index < 5; index += 1) {
       await create({ identifier: `row-${index}`, document: { title: `Row ${index}` } });

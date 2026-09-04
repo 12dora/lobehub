@@ -1,5 +1,7 @@
 'use client';
 
+import i18n from 'i18next';
+
 import { adminTaskTemplatesService } from '@/enterprise/client/services/adminTaskTemplates';
 
 import type { AdminTaskTemplateItem, AdminTaskTemplateListOutput } from './types';
@@ -21,6 +23,7 @@ export const TASK_TEMPLATE_RECOVERY_SCAN_LIMIT = 100;
 
 export type TaskTemplateListReader = (input: {
   limit: number;
+  locale?: string;
   offset: number;
   query: string;
 }) => Promise<AdminTaskTemplateListOutput>;
@@ -47,6 +50,7 @@ export const reloadTaskTemplate = async (
   try {
     page = await list({
       limit: TASK_TEMPLATE_RECOVERY_SCAN_LIMIT,
+      locale: i18n.resolvedLanguage || i18n.language,
       offset: 0,
       query: stale.identifier,
     });
