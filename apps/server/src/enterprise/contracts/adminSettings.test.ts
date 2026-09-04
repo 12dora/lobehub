@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   adminSettingsApplyImmediateInputSchema,
+  adminSettingsGetDraftOutputSchema,
   adminSettingsSaveInputSchema,
   adminSettingsSaveOutputSchema,
 } from './adminSettings';
@@ -96,6 +97,70 @@ describe('admin settings save contract', () => {
         policies: { 'general.fontSize': { mode: 'nope', schemaVersion: 1, visibility: 'visible' } },
       }),
     ).toThrow();
+  });
+
+  it('accepts locked telemetry with visibility visible and requires schemaVersion', () => {
+    expect(
+      adminSettingsSaveInputSchema.parse({
+        ...baseSave,
+        policies: {
+          'general.telemetry': {
+            mode: 'locked',
+            schemaVersion: 1,
+            value: false,
+            visibility: 'visible',
+          },
+        },
+      }).policies['general.telemetry'],
+    ).toEqual({
+      mode: 'locked',
+      schemaVersion: 1,
+      value: false,
+      visibility: 'visible',
+    });
+    expect(
+      adminSettingsSaveInputSchema.safeParse({
+        ...baseSave,
+        policies: {
+          'general.telemetry': { mode: 'locked', value: false, visibility: 'visible' },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('exposes lockVisibly on registry entries the admin console hydrates', () => {
+    expect(
+      adminSettingsGetDraftOutputSchema.parse({
+        baseRevision: 16,
+        draft: {},
+        draftToken,
+        publishedPolicies: {},
+        registry: [
+          {
+            control: 'switch',
+            descriptionKey: 'settingsPolicy.paths.general.telemetry.desc',
+            group: 'general',
+            lockVisibly: true,
+            path: 'general.telemetry',
+            schemaVersion: 1,
+            titleKey: 'settingsPolicy.paths.general.telemetry.title',
+          },
+          {
+            control: 'switch',
+            descriptionKey: 'settingsPolicy.paths.general.isLiteMode.desc',
+            group: 'general',
+            path: 'general.isLiteMode',
+            schemaVersion: 1,
+            titleKey: 'settingsPolicy.paths.general.isLiteMode.title',
+          },
+        ],
+        registryVersion: 7,
+        status: 'published',
+      }).registry,
+    ).toEqual([
+      expect.objectContaining({ lockVisibly: true, path: 'general.telemetry' }),
+      expect.objectContaining({ path: 'general.isLiteMode' }),
+    ]);
   });
 
   it('returns the fresh CAS base plus optional warnings', () => {

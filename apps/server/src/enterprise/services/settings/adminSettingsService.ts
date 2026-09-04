@@ -40,7 +40,9 @@ import {
 import { PlatformPublisherService, PlatformRevisionConflictError } from '../platformPublisher';
 import { applySettingsPatch } from './applySettingsPatch';
 import { validateSettingsDraft } from './draftValidation';
+import { publishedRowsToPolicyMap } from './effectiveSettingsMaps';
 import { SettingsDraftValidationError } from './errors';
+import { canonicalizeLockVisiblePolicyMap } from './lockVisiblePolicy';
 import {
   isServiceModelManagedPath,
   mergePolicyEditorDraft,
@@ -184,6 +186,7 @@ export class AdminSettingsService {
             published,
           );
         }
+        draft = canonicalizeLockVisiblePolicyMap(draft);
         const validation = await validateSettingsDraft(draft, model);
         if (!validation.ok) throw new SettingsDraftValidationError(validation.issues);
 
@@ -209,14 +212,11 @@ export class AdminSettingsService {
   getDraft = async () => {
     const bundle = await this.model.ensureBundle();
     const published = await this.model.listPublishedPolicies();
-    const publishedPolicies: SettingsDraftPolicyMap = {};
-    for (const row of published) {
-      publishedPolicies[row.path] = policyToMapEntry(row);
-    }
+    const publishedPolicies = publishedRowsToPolicyMap(published);
 
     return {
       baseRevision: bundle.revision,
-      draft: (bundle.draft ?? {}) as SettingsDraftPolicyMap,
+      draft: canonicalizeLockVisiblePolicyMap((bundle.draft ?? {}) as SettingsDraftPolicyMap),
       draftToken: this.draftToken(bundle),
       publishedPolicies,
       registry: settingsRegistry.list().map((e) => ({
@@ -224,6 +224,7 @@ export class AdminSettingsService {
         control: e.control,
         descriptionKey: e.descriptionKey,
         group: e.group,
+        ...(e.lockVisibly ? { lockVisibly: true as const } : {}),
         max: e.max,
         min: e.min,
         options: e.options ? [...e.options] : undefined,

@@ -1,6 +1,7 @@
 import type { SettingPolicyMode, SettingPolicyVisibility } from '@/types/platform/settings';
 
 import type { PublishedPolicyMap } from './effectiveSettingsCache';
+import { canonicalizeLockVisiblePolicy } from './lockVisiblePolicy';
 
 export interface PublishedPolicyRow {
   mode: string;
@@ -13,12 +14,12 @@ export interface PublishedPolicyRow {
 export function publishedRowsToPolicyMap(rows: readonly PublishedPolicyRow[]): PublishedPolicyMap {
   const policies: PublishedPolicyMap = {};
   for (const row of rows) {
-    policies[row.path] = {
+    policies[row.path] = canonicalizeLockVisiblePolicy(row.path, {
       mode: row.mode as SettingPolicyMode,
       schemaVersion: row.schemaVersion,
       value: row.value,
       visibility: (row.visibility ?? 'visible') as SettingPolicyVisibility,
-    };
+    });
   }
   return policies;
 }

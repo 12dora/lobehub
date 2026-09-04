@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   ensurePlatformRbacSeeded: vi.fn(),
   ensureTaskTemplateCatalogSeeded: vi.fn(),
   getServerDB: vi.fn(),
+  repairLockVisiblePublishedPolicies: vi.fn(),
 }));
 
 vi.mock('./superAdmin', () => ({
@@ -25,6 +26,10 @@ vi.mock('../services/templateCatalogBootstrap', () => ({
 vi.mock('../services/agentCatalog/adminService', () => ({
   DEFAULT_INBOX_BOOTSTRAP_ACTOR: null,
   ensureDefaultInboxProvisioned: mocks.ensureDefaultInboxProvisioned,
+}));
+
+vi.mock('../services/settings/lockVisiblePolicy', () => ({
+  repairLockVisiblePublishedPolicies: mocks.repairLockVisiblePublishedPolicies,
 }));
 
 vi.mock('@/database/core/db-adaptor', () => ({
@@ -55,6 +60,7 @@ beforeEach(() => {
   mocks.ensureAgentTemplateCatalogSeeded.mockResolvedValue(undefined);
   mocks.ensureDefaultInboxProvisioned.mockResolvedValue(undefined);
   mocks.ensureTaskTemplateCatalogSeeded.mockResolvedValue(undefined);
+  mocks.repairLockVisiblePublishedPolicies.mockResolvedValue({ repairedPaths: [] });
   mocks.getServerDB.mockResolvedValue(db);
   mocks.bootstrapSuperAdmin.mockReset();
   infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
@@ -68,6 +74,7 @@ afterEach(() => {
   mocks.ensureAgentTemplateCatalogSeeded.mockReset();
   mocks.ensureDefaultInboxProvisioned.mockReset();
   mocks.ensureTaskTemplateCatalogSeeded.mockReset();
+  mocks.repairLockVisiblePublishedPolicies.mockReset();
   mocks.getServerDB.mockReset();
 });
 
@@ -81,12 +88,23 @@ describe('runStartupPlatformBootstrap', () => {
     expect(mocks.ensurePlatformRbacSeeded).toHaveBeenCalledWith(db);
     expect(mocks.ensureAgentTemplateCatalogSeeded).toHaveBeenCalledWith(db);
     expect(mocks.ensureTaskTemplateCatalogSeeded).toHaveBeenCalledWith(db);
+    expect(mocks.repairLockVisiblePublishedPolicies).toHaveBeenCalledWith(db);
     expect(mocks.ensureDefaultInboxProvisioned).not.toHaveBeenCalled();
     expect(mocks.bootstrapSuperAdmin).not.toHaveBeenCalled();
   });
 
   it('does not fail boot when template catalog seed throws', async () => {
     mocks.ensureAgentTemplateCatalogSeeded.mockRejectedValue(new Error('seed failed'));
+
+    const outcome = await runStartupPlatformBootstrap(db, baseEnv);
+
+    expect(outcome).toEqual({ status: 'seeded', superAdminCount: 0 });
+    expect(errorSpy).toHaveBeenCalled();
+    expect(mocks.bootstrapSuperAdmin).not.toHaveBeenCalled();
+  });
+
+  it('does not fail boot when lock-visible policy repair throws', async () => {
+    mocks.repairLockVisiblePublishedPolicies.mockRejectedValue(new Error('update failed'));
 
     const outcome = await runStartupPlatformBootstrap(db, baseEnv);
 

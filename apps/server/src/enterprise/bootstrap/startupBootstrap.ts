@@ -10,11 +10,14 @@
  *     permissions added by a new release appear in an already-migrated database.
  *  2. Auto-seed the platform template catalogs (agent + task) when they have never
  *     been seeded. Failures are logged and never block boot.
- *  3. Optional super-admin bootstrap, driven by the same `BOOTSTRAP_*` env vars
+ *  3. Repair published lock-visible policies (currently `general.telemetry`) that
+ *     were stored as locked+hidden before the control stayed on-screen. Idempotent;
+ *     does not bump the settings revision. Failures never block boot.
+ *  4. Optional super-admin bootstrap, driven by the same `BOOTSTRAP_*` env vars
  *     the CLI script accepts. Promotes an existing user, or (with
  *     `BOOTSTRAP_ALLOW_CREATE=1`) creates a local break-glass account and prints
  *     the generated one-time password exactly once.
- *  4. Independent managed-agents default-inbox provision. Runs after template
+ *  5. Independent managed-agents default-inbox provision. Runs after template
  *     seeding when the admin bootstrap ran, and still runs when the admin console
  *     is off but `ENABLE_PLATFORM_MANAGED_AGENTS` is on.
  *
@@ -33,6 +36,7 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { ensureDefaultInboxProvisioned } from '../services/agentCatalog/adminService';
+import { repairLockVisiblePublishedPolicies } from '../services/settings/lockVisiblePolicy';
 import {
   ensureAgentTemplateCatalogSeeded,
   ensureTaskTemplateCatalogSeeded,
@@ -98,6 +102,15 @@ export const runStartupPlatformBootstrap = async (
       await ensureTaskTemplateCatalogSeeded(db);
     } catch (error) {
       console.error(`${LOG_PREFIX} template catalog seed failed (non-blocking)`, {
+        errorCategory: classifyError(error),
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    try {
+      await repairLockVisiblePublishedPolicies(db);
+    } catch (error) {
+      console.error(`${LOG_PREFIX} lock-visible policy repair failed (non-blocking)`, {
         errorCategory: classifyError(error),
         message: error instanceof Error ? error.message : String(error),
       });

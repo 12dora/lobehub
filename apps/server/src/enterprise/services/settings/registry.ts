@@ -90,6 +90,9 @@ const assertRegistryValid = (entries: readonly Def[]) => {
     ) {
       throw new Error(`Missing user control omission reason for ${entry.path}`);
     }
+    if (entry.lockVisibly && !entry.platformPolicyEligible) {
+      throw new Error(`lockVisibly requires platformPolicyEligible: ${entry.path}`);
+    }
   }
 };
 
@@ -118,6 +121,9 @@ export class SettingsRegistry {
   get = (path: string): Def | undefined => byPath.get(path);
 
   has = (path: string): boolean => byPath.has(path);
+
+  /** Locked policies for these paths stay visible (greyed out) instead of hidden. */
+  isLockVisiblyPath = (path: string): boolean => this.get(path)?.lockVisibly === true;
 
   isSecretPath = (path: string): boolean => {
     if (!path) return true;

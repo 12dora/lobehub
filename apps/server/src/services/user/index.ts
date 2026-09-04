@@ -4,6 +4,7 @@ import { type LobeChatDatabase } from '@lobechat/database';
 import { initNewUserForBusiness } from '@/business/server/user';
 import { UserModel } from '@/database/models/user';
 import { initializeServerAnalytics } from '@/libs/analytics';
+import { checkTelemetryEnabled } from '@/libs/trpc/lambda/middleware/telemetry';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { createFileS3 } from '@/server/modules/S3';
 
@@ -34,21 +35,27 @@ export class UserService {
       }
     }
 
-    const analytics = await initializeServerAnalytics();
-    analytics?.identify(user.id, {
-      email: user.email ?? undefined,
-      firstName: user.firstName ?? undefined,
-      lastName: user.lastName ?? undefined,
-      phone: user.phone ?? undefined,
-      username: user.username ?? undefined,
-    });
-    analytics?.track({
-      name: 'user_register_completed',
-      properties: {
-        spm: 'user_service.init_user.user_created',
-      },
+    const { telemetryEnabled } = await checkTelemetryEnabled({
+      serverDB: this.db,
       userId: user.id,
     });
+    if (telemetryEnabled) {
+      const analytics = await initializeServerAnalytics();
+      analytics?.identify(user.id, {
+        email: user.email ?? undefined,
+        firstName: user.firstName ?? undefined,
+        lastName: user.lastName ?? undefined,
+        phone: user.phone ?? undefined,
+        username: user.username ?? undefined,
+      });
+      analytics?.track({
+        name: 'user_register_completed',
+        properties: {
+          spm: 'user_service.init_user.user_created',
+        },
+        userId: user.id,
+      });
+    }
   }
 
   getUserApiKeys = async (id: string) => {

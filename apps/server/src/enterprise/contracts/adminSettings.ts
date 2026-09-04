@@ -31,6 +31,7 @@ export const adminSettingsGetDraftOutputSchema = z.object({
       control: z.string(),
       descriptionKey: z.string(),
       group: z.string(),
+      lockVisibly: z.boolean().optional(),
       max: z.number().optional(),
       min: z.number().optional(),
       options: z

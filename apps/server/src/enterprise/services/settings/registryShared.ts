@@ -45,7 +45,11 @@ void _assertAllSystemAgentReasoningEffortLevels;
 
 export const systemAgentReasoningEffortSchema = z.enum(SYSTEM_AGENT_REASONING_EFFORT_LEVELS);
 
-export type Def = SettingDefinition;
+/**
+ * When the platform locks this path, keep the user control visible (read-only)
+ * instead of hiding it. Server canonicalizes published `visibility` to `visible`.
+ */
+export type Def = SettingDefinition & { lockVisibly?: boolean };
 
 /**
  * `builtInDefault` is optional so a leaf can stay absent until a policy (or user
@@ -53,6 +57,7 @@ export type Def = SettingDefinition;
  */
 type RegistryEntry<T> = Omit<SettingDefinition<T>, 'builtInDefault'> & {
   builtInDefault?: T;
+  lockVisibly?: boolean;
 };
 
 export const def = <T>(entry: RegistryEntry<T>): Def => entry as Def;

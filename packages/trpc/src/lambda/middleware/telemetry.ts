@@ -1,7 +1,5 @@
 import { type LobeChatDatabase } from '@lobechat/database';
-import { type UserGeneralConfig } from '@lobechat/types';
 
-import { UserModel } from '@/database/models/user';
 import { appEnv } from '@/envs/app';
 
 import { trpc } from '../init';
@@ -15,14 +13,42 @@ export interface TelemetryResult {
   telemetryEnabled: boolean;
 }
 
+/** Per-request memo — not a process cache. Keyed by the ctx object of one call. */
+const requestCache = new WeakMap<object, Promise<TelemetryResult>>();
+
+const loadPlatformTelemetryResolver = async () => {
+  const { resolveEffectiveTelemetry } =
+    await import('@/server/enterprise/services/settings/resolveTelemetryPolicy');
+  return resolveEffectiveTelemetry;
+};
+
+const computeTelemetryEnabled = async (ctx: TelemetryContext): Promise<TelemetryResult> => {
+  if (!ctx.userId || !ctx.serverDB) {
+    return { telemetryEnabled: false };
+  }
+
+  try {
+    const resolveEffectiveTelemetry = await loadPlatformTelemetryResolver();
+    const telemetryEnabled = await resolveEffectiveTelemetry({
+      db: ctx.serverDB,
+      userId: ctx.userId,
+    });
+    return { telemetryEnabled };
+  } catch {
+    return { telemetryEnabled: false };
+  }
+};
+
 /**
  * Check if telemetry is enabled for the current user
  *
- * Priority:
- * 1. Environment variable TELEMETRY_DISABLED=1 → telemetryEnabled: false (highest priority)
- * 2. User settings from database user_settings.general.telemetry (new location)
- * 3. User preference from database users.preference.telemetry (old location, deprecated)
- * 4. Default to true if not explicitly set
+ * Precedence:
+ * 1. TELEMETRY_DISABLED env → false
+ * 2. Locked platform policy (when settingsPolicy is on)
+ * 3. Explicit user value: override row, then legacy `user_settings.general.telemetry`,
+ *    then legacy `users.preference.telemetry`
+ * 4. Default-mode platform policy
+ * 5. false (missing user fails closed before any platform default)
  */
 export const checkTelemetryEnabled = async (ctx: TelemetryContext): Promise<TelemetryResult> => {
   // Priority 1: Check environment variable (highest priority)
@@ -30,35 +56,16 @@ export const checkTelemetryEnabled = async (ctx: TelemetryContext): Promise<Tele
     return { telemetryEnabled: false };
   }
 
-  // If userId or serverDB is not available, default to disabled
   if (!ctx.userId || !ctx.serverDB) {
     return { telemetryEnabled: false };
   }
 
-  try {
-    const userModel = new UserModel(ctx.serverDB, ctx.userId);
+  const cached = requestCache.get(ctx);
+  if (cached) return cached;
 
-    // Priority 2: Check user settings (new location: settings.general.telemetry)
-    const settings = await userModel.getUserSettings();
-    const generalConfig = settings?.general as UserGeneralConfig | null | undefined;
-
-    if (generalConfig?.telemetry === false) {
-      return { telemetryEnabled: false };
-    }
-
-    // Priority 3: Check user preference (old location: preference.telemetry)
-    const preference = await userModel.getUserPreference();
-
-    if (typeof preference?.telemetry === 'boolean') {
-      return { telemetryEnabled: preference?.telemetry };
-    }
-
-    // Priority 4: Default to true if not explicitly set
-    return { telemetryEnabled: true };
-  } catch {
-    // If fetching user settings fails, default to disabled
-    return { telemetryEnabled: false };
-  }
+  const pending = computeTelemetryEnabled(ctx);
+  requestCache.set(ctx, pending);
+  return pending;
 };
 
 /**

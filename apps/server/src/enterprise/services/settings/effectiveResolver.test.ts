@@ -86,6 +86,21 @@ describe('resolveSettingPath', () => {
     expect(r.canOverride).toBe(false);
   });
 
+  it('mode=locked telemetry false with a retained true override: platform wins, still visible', () => {
+    const r = resolveSettingPath({
+      builtInDefault: false,
+      path: 'general.telemetry',
+      policy: { mode: 'locked', schemaVersion: 1, value: false, visibility: 'visible' },
+      userOverride: { value: true },
+    });
+    expect(r.effectiveValue).toBe(false);
+    expect(r.locked).toBe(true);
+    expect(r.hidden).toBe(false);
+    expect(r.canOverride).toBe(false);
+    expect(r.source).toBe('platform');
+    expect(r.visibility).toBe('visible');
+  });
+
   it('unlock restore: after locked→default, same override row is honored again', () => {
     const locked = resolveSettingPath({
       builtInDefault: builtin,
@@ -293,6 +308,30 @@ describe('resolveEffectiveSettings truth table', () => {
     });
     expect(result.effectiveValues['general.fontSize']).toBe(14);
     expect(result.pathMeta['general.fontSize']?.source).toBe('user');
+  });
+
+  it('flag ON: locked telemetry false retains a true override but does not apply it', () => {
+    const result = resolveEffectiveSettings({
+      overrides: { 'general.telemetry': { value: true } },
+      platformPolicyEnabled: true,
+      policies: {
+        'general.telemetry': {
+          mode: 'locked',
+          schemaVersion: 1,
+          value: false,
+          visibility: 'visible',
+        },
+      },
+    });
+    expect(result.effectiveValues['general.telemetry']).toBe(false);
+    expect(result.pathMeta['general.telemetry']).toMatchObject({
+      canOverride: false,
+      hidden: false,
+      locked: true,
+      mode: 'locked',
+      source: 'platform',
+      visibility: 'visible',
+    });
   });
 
   it('flag ON: locked ignores override; unlock restores', () => {

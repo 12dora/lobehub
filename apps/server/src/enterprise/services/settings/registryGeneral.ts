@@ -55,6 +55,8 @@ export const GENERAL_ENTRIES: readonly Def[] = [
     control: 'switch',
     descriptionKey: 'settingsPolicy.paths.general.telemetry.desc',
     group: 'general',
+    // Locked telemetry stays on-screen (greyed out) so users can see the org's choice.
+    lockVisibly: true,
     path: 'general.telemetry',
     userControlSurface: {
       kind: 'surface',

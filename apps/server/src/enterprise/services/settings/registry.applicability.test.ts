@@ -24,6 +24,15 @@ describe('settingsRegistry applicability (B6-R2)', () => {
     ).toBeNull();
   });
 
+  it('marks telemetry as lock-visible so a locked policy stays on-screen', () => {
+    expect(settingsRegistry.get('general.telemetry')).toMatchObject({
+      lockVisibly: true,
+      platformPolicyEligible: true,
+    });
+    expect(settingsRegistry.isLockVisiblyPath('general.telemetry')).toBe(true);
+    expect(settingsRegistry.isLockVisiblyPath('memory.enabled')).toBe(false);
+  });
+
   it('exposes the approval policy to the settings policy editor under the tool group', () => {
     const path = 'tool.humanIntervention.approvalMode';
     const entry = settingsRegistry.list().find((e) => e.path === path);
