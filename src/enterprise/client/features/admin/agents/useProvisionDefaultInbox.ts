@@ -1,8 +1,8 @@
 'use client';
 
-import { confirmModal, toast } from '@lobehub/ui/base-ui';
+import { toast } from '@lobehub/ui/base-ui';
 import i18n from 'i18next';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { runAdminMutation } from '@/enterprise/client/features/admin/primitives/runAdminMutation';
@@ -14,9 +14,13 @@ import type { AdminAgentRefresh } from './useAdminAgentRefresh';
 
 export interface UseProvisionDefaultInboxParams {
   authMethod: AdminReauthAuthMethod | null;
+  /**
+   * The pointer read settled with no default assistant AND this operator holds every permission
+   * the server's provisioning demands (create + publish + assign). Turning true runs the
+   * initialization once, without asking.
+   */
+  autoProvision: boolean;
   client?: AdminAgentsClient;
-  /** The provisioned assistant is empty until it is authored — hand the admin its editor. */
-  onProvisioned: (agentId: string) => Promise<void> | void;
   /**
    * The shared both-surfaces invalidator (`useAdminAgentRefresh(...).defaultAndList`): the Agent
    * this writes IS the new default and a table row that did not exist a moment ago.
@@ -25,55 +29,63 @@ export interface UseProvisionDefaultInboxParams {
 }
 
 /**
- * 开始托管默认助理.
+ * Make sure the platform HAS a default assistant.
  *
- * Provisioning replaces the built-in inbox every member currently sees with a platform Agent, so
- * it asks first — this is the one write on this page whose blast radius is "everyone", and it is
- * not something an admin should discover after the fact.
+ * Every member meets the default assistant first, so its existence is not something an admin opts
+ * into — the server provisions it at startup and when this page's list is read, and this is the
+ * client-side repair for the window before either has happened. The write is idempotent server
+ * side, so it needs no confirmation; it runs at most once per mount and is retried only by click,
+ * because the pointer read still says "no default" while the refresh below is in flight and
+ * re-firing on that would be an unbounded write loop.
  */
 export const useProvisionDefaultInbox = ({
   authMethod,
+  autoProvision,
   client = adminAgentsService,
-  onProvisioned,
   refresh,
 }: UseProvisionDefaultInboxParams) => {
   const { t } = useTranslation('admin');
   const [provisioning, setProvisioning] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const attempted = useRef(false);
+  const inFlight = useRef(false);
 
-  const provision = useCallback(() => {
-    confirmModal({
-      cancelText: t('primitives.dangerConfirm.cancel'),
-      content: t('agentCatalog.defaultAgent.provision.description'),
-      okText: t('agentCatalog.defaultAgent.provision.submit'),
-      title: t('agentCatalog.defaultAgent.provision.title'),
-      onOk: async () => {
-        setProvisioning(true);
-        let agentId: string | undefined;
-        const committed = await runAdminMutation({
-          authMethod,
-          run: async () => {
-            // The seeded name / prompt / opening message are written in the admin's own UI
-            // language, so the takeover does not hand every member English copy by default.
-            const created = await client.provisionDefaultInbox({
-              locale: i18n.resolvedLanguage || i18n.language,
-            });
-            agentId = created.identity.id;
-          },
+  const provision = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    attempted.current = true;
+    setProvisioning(true);
+    const committed = await runAdminMutation({
+      authMethod,
+      // The card owns the failure surface: nobody clicked this, so a toast would be an error
+      // report with no action next to it. Keep the message where the missing assistant is.
+      onError: () => setFailed(true),
+      run: async () => {
+        // The seeded name / prompt / opening message are written in the admin's own UI
+        // language, so the default does not greet every member in English.
+        await client.provisionDefaultInbox({
+          locale: i18n.resolvedLanguage || i18n.language,
         });
-        setProvisioning(false);
-        if (!committed || !agentId) return;
-
-        try {
-          // Both keys: the pinned card is the whole point of this write, and the table gained a row.
-          await refresh();
-        } catch {
-          toast.warning(t('agentCatalog.recovery.refreshFailed'));
-        }
-        toast.success(t('agentCatalog.defaultAgent.provision.success'));
-        await onProvisioned(agentId);
       },
     });
-  }, [authMethod, client, onProvisioned, refresh, t]);
+    setProvisioning(false);
+    inFlight.current = false;
+    if (!committed) return;
+    setFailed(false);
 
-  return { provision, provisioning };
+    try {
+      // Both keys: the pinned card is the whole point of this write, and the table gained a row.
+      await refresh();
+    } catch {
+      toast.warning(t('agentCatalog.recovery.refreshFailed'));
+    }
+    toast.success(t('agentCatalog.defaultAgent.provision.success'));
+  }, [authMethod, client, refresh, t]);
+
+  useEffect(() => {
+    if (!autoProvision || attempted.current) return;
+    void provision();
+  }, [autoProvision, provision]);
+
+  return { failed, provision, provisioning };
 };

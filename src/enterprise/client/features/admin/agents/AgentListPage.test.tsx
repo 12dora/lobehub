@@ -349,12 +349,6 @@ const defaultSnapshot = (id = 'agent-inbox') => ({
   },
 });
 
-/** Run whatever `confirmModal` was handed as its confirm callback. */
-const confirmProvision = async () => {
-  const { onOk } = mocks.confirmModal.mock.calls.at(-1)![0] as { onOk: () => Promise<void> };
-  await onOk();
-};
-
 const renderPage = () =>
   render(
     <MemoryRouter>
@@ -372,13 +366,28 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     mocks.confirmModal.mockReset();
     mocks.provisionDefaultInbox.mockReset();
     mocks.toastSuccess.mockReset();
-    // Default: the mutation commits.
+    // Default: the mutation commits. On failure it mirrors the real primitive — the caller's own
+    // error surface replaces the default toast when it provides one.
     mocks.runAdminMutation
       .mockReset()
-      .mockImplementation(async ({ run }: { run: () => Promise<void> }) => {
-        await run();
-        return true;
-      });
+      .mockImplementation(
+        async ({
+          onError,
+          run,
+        }: {
+          onError?: (error: unknown) => Promise<void> | void;
+          run: () => Promise<void>;
+        }) => {
+          try {
+            await run();
+            return true;
+          } catch (error) {
+            if (onError) await onError(error);
+            else mocks.toastError(error);
+            return false;
+          }
+        },
+      );
     mocks.archive.mockReset();
     mocks.setDefaultInbox.mockReset();
     mocks.rowActionParams = [];
@@ -570,6 +579,8 @@ describe('AgentListPage with the real AsyncBoundary', () => {
       PLATFORM_PERMISSIONS.AGENT_CREATE,
       PLATFORM_PERMISSIONS.AGENT_PUBLISH,
     ];
+    // The platform already has its default assistant, so nothing else on this page writes.
+    mocks.defaultAgent = defaultAgentState({ data: defaultSnapshot() });
     mocks.list = pagination({ boundaryData: [], isEmpty: true });
     renderPage();
 
@@ -597,6 +608,7 @@ describe('AgentListPage with the real AsyncBoundary', () => {
       PLATFORM_PERMISSIONS.AGENT_CREATE,
       PLATFORM_PERMISSIONS.AGENT_PUBLISH,
     ];
+    mocks.defaultAgent = defaultAgentState({ data: defaultSnapshot() });
     mocks.refresh.mockRejectedValueOnce(new Error('offline'));
     mocks.list = pagination({ boundaryData: [], isEmpty: true });
     renderPage();
@@ -1005,8 +1017,10 @@ describe('AgentListPage with the real AsyncBoundary', () => {
       // Avatar and model live on the published version, not on the list row.
       expect(screen.getByAltText('avatar').getAttribute('src')).toBe('🤖');
       expect(screen.getByText('openai · gpt-4o-mini')).toBeTruthy();
-      expect(screen.getByText('agentCatalog.defaultAgent.version')).toBeTruthy();
-      expect(screen.queryByText('agentCatalog.defaultAgent.empty.description')).toBeNull();
+      // Saving IS publishing here, so a version number is an implementation detail no admin has
+      // to reason about — the card never shows the one it reads for the avatar / model.
+      expect(screen.queryByText('1.2.0')).toBeNull();
+      expect(screen.queryByText('agentCatalog.defaultAgent.preparing')).toBeNull();
     });
 
     it('keeps the pinned default out of the table so it is not two rows to reconcile', () => {
@@ -1121,45 +1135,96 @@ describe('AgentListPage with the real AsyncBoundary', () => {
       expect(mocks.defaultAgentMutate).toHaveBeenCalledOnce();
     });
 
-    it('explains the built-in fallback and takes the default over on confirmation', async () => {
+    it('initializes a missing default assistant itself, exactly once and without asking', async () => {
+      mocks.permissions = [
+        PLATFORM_PERMISSIONS.AGENT_READ,
+        PLATFORM_PERMISSIONS.AGENT_CREATE,
+        PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+        PLATFORM_PERMISSIONS.AGENT_ASSIGN,
+      ];
+      mocks.defaultAgent = defaultAgentState({ data: null });
+      mocks.provisionDefaultInbox.mockResolvedValue({ identity: { id: 'agent-new' } });
+      const { unmount } = renderPage();
+
+      // The default assistant is not something an admin opts into: no step to click, nothing to
+      // confirm. Until it lands, the card says what is happening.
+      expect(screen.getByText('agentCatalog.defaultAgent.preparing')).toBeTruthy();
+      await waitFor(() => expect(mocks.provisionDefaultInbox).toHaveBeenCalledOnce());
+      expect(mocks.confirmModal).not.toHaveBeenCalled();
+      // The seeded copy follows the admin's own UI language.
+      expect(mocks.provisionDefaultInbox).toHaveBeenCalledWith({ locale: 'zh-CN' });
+      // Both the pinned card and the table now hold a row that did not exist a moment ago.
+      await waitFor(() => expect(mocks.defaultAgentMutate).toHaveBeenCalledOnce());
+      expect(mocks.refresh).toHaveBeenCalledOnce();
+      expect(mocks.toastSuccess).toHaveBeenCalledWith(
+        'agentCatalog.defaultAgent.provision.success',
+      );
+      // Nobody asked for an editor — the assistant is seeded and editable when the admin wants it.
+      expect(mocks.openEditor).not.toHaveBeenCalled();
+
+      // Once the refreshed read lands, the assistant is simply there — and a page that opens on a
+      // provisioned default writes nothing at all.
+      unmount();
+      mocks.defaultAgent = defaultAgentState({ data: defaultSnapshot('agent-new') });
+      renderPage();
+      expect(screen.getByText('Company assistant')).toBeTruthy();
+      expect(screen.queryByText('agentCatalog.defaultAgent.preparing')).toBeNull();
+      expect(mocks.provisionDefaultInbox).toHaveBeenCalledOnce();
+    });
+
+    it('keeps a failed initialization on the card, with a retry that is the only re-attempt', async () => {
+      mocks.permissions = [
+        PLATFORM_PERMISSIONS.AGENT_READ,
+        PLATFORM_PERMISSIONS.AGENT_CREATE,
+        PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+        PLATFORM_PERMISSIONS.AGENT_ASSIGN,
+      ];
+      mocks.defaultAgent = defaultAgentState({ data: null });
+      mocks.provisionDefaultInbox
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValue({ identity: { id: 'agent-new' } });
+      renderPage();
+
+      expect(await screen.findByText('agentCatalog.defaultAgent.provision.error')).toBeTruthy();
+      // Nobody clicked this, so the failure belongs next to the missing assistant, not in a toast
+      // that appears out of nowhere.
+      expect(mocks.toastError).not.toHaveBeenCalled();
+      // A failure re-arms nothing: the card waits for a decision instead of hammering the server.
+      expect(mocks.provisionDefaultInbox).toHaveBeenCalledOnce();
+
+      fireEvent.click(screen.getByText('agentCatalog.dependency.retry'));
+      await waitFor(() => expect(mocks.provisionDefaultInbox).toHaveBeenCalledTimes(2));
+      expect(mocks.toastSuccess).toHaveBeenCalledWith(
+        'agentCatalog.defaultAgent.provision.success',
+      );
+    });
+
+    it('sends an operator who cannot initialize the default to one who can', () => {
+      mocks.defaultAgent = defaultAgentState({ data: null });
+      renderPage();
+
+      expect(screen.getByText('agentCatalog.defaultAgent.provision.readOnly')).toBeTruthy();
+      expect(screen.queryByText('agentCatalog.defaultAgent.preparing')).toBeNull();
+      expect(mocks.provisionDefaultInbox).not.toHaveBeenCalled();
+    });
+
+    it('does not start an initialization the server would reject for a missing AGENT_ASSIGN', () => {
+      // Provisioning the default also assigns it to everyone, so the server demands AGENT_ASSIGN
+      // on top of create + publish. Starting the write here would replace the neutral "ask an
+      // admin" message with a permission error the operator can do nothing about.
       mocks.permissions = [
         PLATFORM_PERMISSIONS.AGENT_READ,
         PLATFORM_PERMISSIONS.AGENT_CREATE,
         PLATFORM_PERMISSIONS.AGENT_PUBLISH,
       ];
       mocks.defaultAgent = defaultAgentState({ data: null });
-      mocks.provisionDefaultInbox.mockResolvedValue({ identity: { id: 'agent-new' } });
-      mocks.fetchDetail.mockResolvedValue({ identity: { id: 'agent-new' }, versions: [] });
       renderPage();
 
-      expect(screen.getByText('agentCatalog.defaultAgent.empty.description')).toBeTruthy();
-      fireEvent.click(screen.getByText('agentCatalog.defaultAgent.provision.action'));
-      // Taking over every member's default assistant is never a one-click accident.
-      expect(mocks.confirmModal).toHaveBeenCalledOnce();
       expect(mocks.provisionDefaultInbox).not.toHaveBeenCalled();
-
-      await confirmProvision();
-
-      // The seeded copy follows the admin's own UI language.
-      expect(mocks.provisionDefaultInbox).toHaveBeenCalledWith({ locale: 'zh-CN' });
-      // Both the pinned card and the table now hold a row that did not exist a moment ago.
-      expect(mocks.defaultAgentMutate).toHaveBeenCalledOnce();
-      expect(mocks.refresh).toHaveBeenCalledOnce();
-      expect(mocks.toastSuccess).toHaveBeenCalledWith(
-        'agentCatalog.defaultAgent.provision.success',
-      );
-      // A provisioned assistant is empty until it is authored — hand over its editor.
-      await waitFor(() => expect(mocks.openEditor).toHaveBeenCalledOnce());
-      expect(mocks.fetchDetail).toHaveBeenCalledWith('agent-new', expect.anything(), false);
-    });
-
-    it('offers no takeover to an operator who cannot create and publish', () => {
-      mocks.defaultAgent = defaultAgentState({ data: null });
-      renderPage();
-
-      expect(screen.getByText('agentCatalog.defaultAgent.empty.description')).toBeTruthy();
-      expect(screen.queryByText('agentCatalog.defaultAgent.provision.action')).toBeNull();
-      expect(screen.getByText('agentCatalog.defaultAgent.empty.readOnly')).toBeTruthy();
+      expect(screen.getByText('agentCatalog.defaultAgent.provision.readOnly')).toBeTruthy();
+      expect(screen.queryByText('agentCatalog.defaultAgent.preparing')).toBeNull();
+      // Creating an ordinary assistant is still theirs to do — only the default is out of reach.
+      expect(screen.getByText('agentCatalog.create.submit')).toBeTruthy();
     });
 
     it('reports a failed pointer read instead of claiming there is no default', () => {
@@ -1167,7 +1232,7 @@ describe('AgentListPage with the real AsyncBoundary', () => {
       renderPage();
 
       expect(screen.getByText('agentCatalog.defaultAgent.loadError')).toBeTruthy();
-      expect(screen.queryByText('agentCatalog.defaultAgent.empty.description')).toBeNull();
+      expect(screen.queryByText('agentCatalog.defaultAgent.preparing')).toBeNull();
       // Nothing was ever loaded, so there is no card to keep and nothing a retry would preserve.
       expect(screen.queryByText('Company assistant')).toBeNull();
       expect(screen.queryByText('agentCatalog.dependency.retry')).toBeNull();
@@ -1190,18 +1255,23 @@ describe('AgentListPage with the real AsyncBoundary', () => {
       expect(mocks.defaultAgentMutate).toHaveBeenCalledOnce();
     });
 
-    it('keeps the takeover offer with a retry when a settled "no default" fails to re-read', () => {
+    it('still initializes the default when the settled "no default" also failed to re-read', async () => {
       mocks.permissions = [
         PLATFORM_PERMISSIONS.AGENT_READ,
         PLATFORM_PERMISSIONS.AGENT_CREATE,
         PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+        PLATFORM_PERMISSIONS.AGENT_ASSIGN,
       ];
       mocks.defaultAgent = defaultAgentState({ data: null, error: new Error('offline') });
+      mocks.provisionDefaultInbox.mockResolvedValue({ identity: { id: 'agent-new' } });
       renderPage();
 
-      expect(screen.getByText('agentCatalog.defaultAgent.empty.description')).toBeTruthy();
-      expect(screen.getByText('agentCatalog.defaultAgent.provision.action')).toBeTruthy();
-      expect(screen.getByText('agentCatalog.dependency.retry')).toBeTruthy();
+      // The write is idempotent server side, so a stale read is no reason to leave the platform
+      // without a default assistant — and the failed read keeps its own retry.
+      await waitFor(() => expect(mocks.provisionDefaultInbox).toHaveBeenCalledOnce());
+      expect(screen.getByText('agentCatalog.defaultAgent.loadError')).toBeTruthy();
+      fireEvent.click(screen.getByText('agentCatalog.dependency.retry'));
+      expect(mocks.defaultAgentMutate).toHaveBeenCalled();
     });
   });
 });

@@ -242,18 +242,13 @@ describe('useAgentEditorForm create', () => {
     const { result } = renderHook(() => useAgentEditorForm({}));
     expect(result.current.missingRequirements).toEqual([
       'agentCatalog.editor.missing.name',
-      'agentCatalog.editor.missing.systemRole',
       'agentCatalog.editor.missing.key',
       'agentCatalog.editor.missing.model',
     ]);
 
     act(() => result.current.setDisplayName('Support Agent'));
-    expect(result.current.missingRequirements).toEqual([
-      'agentCatalog.editor.missing.systemRole',
-      'agentCatalog.editor.missing.model',
-    ]);
+    expect(result.current.missingRequirements).toEqual(['agentCatalog.editor.missing.model']);
 
-    act(() => result.current.patchConfig('systemRole', 'Help members with support.'));
     act(() => result.current.setDependencies({ connectors: [], model, skills: [] }));
     expect(result.current.missingRequirements).toEqual([]);
   });
@@ -331,17 +326,40 @@ describe('useAgentEditorForm create', () => {
 
   it('blocks an incomplete form at the submit boundary without touching the service', async () => {
     const { result } = renderHook(() => useAgentEditorForm({}));
-    act(() => result.current.setDisplayName('Support Agent'));
+    act(() => result.current.changeAgentKey('support-agent'));
+    act(() => result.current.patchConfig('systemRole', 'Help members with support.'));
     act(() => result.current.setDependencies({ connectors: [], model, skills: [] }));
     act(() => result.current.setDepValidity(READY));
 
-    // No system role → the contract config cannot be built.
+    // No display name → the contract config cannot be built.
+    expect(result.current.missingRequirements).toEqual(['agentCatalog.editor.missing.name']);
     expect(result.current.canSubmit).toBe(false);
     await act(async () => {
       await result.current.submit();
     });
     expect(mocks.create).not.toHaveBeenCalled();
     expect(result.current.error).toBe('agentCatalog.save.invalid');
+  });
+
+  it('publishes an assistant with NO system prompt — the contract allows an empty one', async () => {
+    const { result } = renderHook(() => useAgentEditorForm({}));
+    act(() => result.current.setDisplayName('Support Agent'));
+    act(() => result.current.setDependencies({ connectors: [], model, skills: [] }));
+    act(() => result.current.setDepValidity(READY));
+
+    // Nothing is outstanding: the prompt is optional for every assistant, not just the default.
+    expect(result.current.missingRequirements).toEqual([]);
+    expect(result.current.canSubmit).toBe(true);
+
+    await act(async () => {
+      await result.current.submit();
+    });
+
+    expect(mocks.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({ displayName: 'Support Agent', systemRole: '' }),
+      }),
+    );
   });
 
   it('refuses an identifier the contract would reject', () => {

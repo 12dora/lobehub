@@ -173,15 +173,11 @@ export const AgentEditorPromptFields = memo<AgentEditorPromptFieldsProps>(
 
     return (
       <div className={styles.field}>
-        <FieldLabel
-          required
-          help={t('agentCatalog.editor.systemRoleDesc')}
-          htmlFor={SYSTEM_ROLE_ID}
-        >
+        {/* Not required: the contract accepts an empty prompt, so no asterisk promises otherwise. */}
+        <FieldLabel help={t('agentCatalog.editor.systemRoleDesc')} htmlFor={SYSTEM_ROLE_ID}>
           {t('agentCatalog.editor.systemRole')}
         </FieldLabel>
         <TextArea
-          required
           aria-label={t('agentCatalog.editor.systemRole')}
           autoSize={{ maxRows: 18, minRows: 6 }}
           disabled={readOnly}

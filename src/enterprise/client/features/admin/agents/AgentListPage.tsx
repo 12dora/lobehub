@@ -93,9 +93,15 @@ const AgentListPage = memo(() => {
       updateListItem: list.updateItem,
     });
 
-  const { provision, provisioning } = useProvisionDefaultInbox({
+  // The default assistant is never absent by choice: the server provisions it, and a settled
+  // "no default" here is the window before it did — repair it instead of asking the admin to.
+  const {
+    failed: provisionFailed,
+    provision,
+    provisioning,
+  } = useProvisionDefaultInbox({
     authMethod: authMethod ?? null,
-    onProvisioned: openEditorForAgentId,
+    autoProvision: defaultAgent.data === null && availability.canProvisionDefaultInbox,
     refresh: refresh.defaultAndList,
   });
   // The card above already shows it in full; repeating the row would just be two truths to keep
@@ -172,12 +178,13 @@ const AgentListPage = memo(() => {
     >
       <DefaultAgentSection
         canEdit={canOpenEditor}
-        canProvision={availability.canCreate}
+        canProvision={availability.canProvisionDefaultInbox}
         error={defaultAgent.error}
+        provisionFailed={provisionFailed}
         provisioning={provisioning}
         snapshot={defaultAgent.data}
         onEdit={(agentId) => void openEditorForAgentId(agentId)}
-        onProvision={provision}
+        onProvisionRetry={() => void provision()}
         onRetry={() => void defaultAgentMutate()}
       />
       <AsyncBoundary

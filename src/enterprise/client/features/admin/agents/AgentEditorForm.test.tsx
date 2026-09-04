@@ -311,16 +311,14 @@ describe('AgentEditorForm layout', () => {
     const requiredLabels = [...document.querySelectorAll('label')]
       .filter((label) => label.querySelector('span[aria-hidden]'))
       .map((label) => label.textContent);
-    expect(requiredLabels).toEqual([
-      'agentCatalog.editor.name*',
-      'agentCatalog.editor.key*',
-      'agentCatalog.editor.systemRole*',
-    ]);
+    expect(requiredLabels).toEqual(['agentCatalog.editor.name*', 'agentCatalog.editor.key*']);
+    // The prompt is NOT among them: the contract accepts an empty system role.
+    expect(screen.getByLabelText('agentCatalog.editor.systemRole')).not.toBeRequired();
   });
 
   it('binds every required label to its control and marks the control required', () => {
     render(<AgentEditorForm />);
-    for (const field of ['name', 'key', 'systemRole'] as const) {
+    for (const field of ['name', 'key'] as const) {
       const label = [...document.querySelectorAll('label')].find(
         (node) => node.textContent === `agentCatalog.editor.${field}*`,
       )!;
@@ -461,14 +459,11 @@ describe('AgentEditorForm: why Save is unavailable', () => {
     formMock.value = {
       ...named('测试助理'),
       dirty: true,
-      missingRequirements: [
-        'agentCatalog.editor.missing.systemRole',
-        'agentCatalog.editor.missing.model',
-      ],
+      missingRequirements: ['agentCatalog.editor.missing.key', 'agentCatalog.editor.missing.model'],
     };
     render(<AgentEditorForm />);
     const line = screen.getByText(
-      'agentCatalog.editor.missing.title|agentCatalog.editor.missing.systemRole · agentCatalog.editor.missing.model',
+      'agentCatalog.editor.missing.title|agentCatalog.editor.missing.key · agentCatalog.editor.missing.model',
     );
     // Rendered outside every form group, i.e. in the pinned footer region beside Save.
     expect(line.closest('section')).toBeNull();

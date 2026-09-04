@@ -142,10 +142,9 @@ export const collectAgentMissingRequirements = ({
   value: AdminAgentEditorValue;
 }): string[] => {
   const list: string[] = [];
+  // The system prompt is deliberately absent: the contract accepts an empty one for every
+  // assistant, and the platform default legitimately publishes without a prompt.
   if (value.config.displayName.trim().length === 0) list.push('agentCatalog.editor.missing.name');
-  if (value.config.systemRole.trim().length === 0) {
-    list.push('agentCatalog.editor.missing.systemRole');
-  }
   if (isCreate && !isAgentKeyValid(agentKey)) list.push('agentCatalog.editor.missing.key');
   if (!value.dependencies.model) list.push('agentCatalog.editor.missing.model');
   return list;

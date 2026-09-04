@@ -55,7 +55,7 @@ describe('deriveAdminAgentPermissions', () => {
       canAssign: false,
       canCreate: false,
       canEdit: false,
-      canRollbackNow: false,
+      canProvisionDefaultInbox: false,
       canSetDefaultNow: false,
     });
   });
@@ -92,9 +92,42 @@ describe('deriveAdminAgentPermissions', () => {
       canAssign: false,
       canCreate: true,
       canEdit: true,
-      canRollbackNow: true,
+      // Creating an assistant is allowed here, but initializing the default one also assigns it.
+      canProvisionDefaultInbox: false,
       canSetDefaultNow: true,
     });
+  });
+
+  it.each([
+    [
+      'create + publish, no assign',
+      [PLATFORM_PERMISSIONS.AGENT_CREATE, PLATFORM_PERMISSIONS.AGENT_PUBLISH],
+    ],
+    [
+      'create + assign, no publish',
+      [PLATFORM_PERMISSIONS.AGENT_CREATE, PLATFORM_PERMISSIONS.AGENT_ASSIGN],
+    ],
+    [
+      'publish + assign, no create',
+      [PLATFORM_PERMISSIONS.AGENT_PUBLISH, PLATFORM_PERMISSIONS.AGENT_ASSIGN],
+    ],
+  ])(
+    'withholds default-assistant initialization for %s — the server would only reject it',
+    (_label, granted) => {
+      const permissions = deriveAdminAgentPermissions(granted);
+      expect(deriveAdminAgentActionAvailability({ permissions }).canProvisionDefaultInbox).toBe(
+        false,
+      );
+    },
+  );
+
+  it('allows default-assistant initialization only with create + publish + assign', () => {
+    const permissions = deriveAdminAgentPermissions([
+      PLATFORM_PERMISSIONS.AGENT_CREATE,
+      PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+      PLATFORM_PERMISSIONS.AGENT_ASSIGN,
+    ]);
+    expect(deriveAdminAgentActionAvailability({ permissions }).canProvisionDefaultInbox).toBe(true);
   });
 
   it('keeps the default-Inbox switch closed until a version exists', () => {

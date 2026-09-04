@@ -25,6 +25,10 @@ export const deriveAdminAgentActionAvailability = (params: {
   canAssign: params.permissions.canAssign,
   canCreate: params.permissions.canCreate && params.permissions.canPublish,
   canEdit: params.permissions.canUpdate && params.permissions.canPublish,
-  canRollbackNow: params.permissions.canPublish,
+  // Initializing the default assistant also points every member at it, so the server demands
+  // AGENT_ASSIGN on top of the create+publish compound. Reusing `canCreate` here would let an
+  // operator without it start a write that can only come back as an error.
+  canProvisionDefaultInbox:
+    params.permissions.canCreate && params.permissions.canPublish && params.permissions.canAssign,
   canSetDefaultNow: params.permissions.canPublish && Boolean(params.hasCurrentVersion),
 });

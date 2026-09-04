@@ -1,6 +1,6 @@
 'use client';
 
-import { Avatar, Block, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Avatar, Block, Flexbox, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo } from 'react';
@@ -37,13 +37,19 @@ const styles = createStaticStyles(({ css }) => ({
 export interface DefaultAgentSectionProps {
   /** AGENT_UPDATE or AGENT_ASSIGN — the same gate the table rows use to open the editor. */
   canEdit: boolean;
-  /** AGENT_CREATE + AGENT_PUBLISH: provisioning writes a published Agent. */
+  /**
+   * AGENT_CREATE + AGENT_PUBLISH + AGENT_ASSIGN: initializing the default writes a published Agent
+   * and points every member at it — the same compound the server requires.
+   */
   canProvision: boolean;
   error: unknown;
   onEdit: (agentId: string) => void;
-  onProvision: () => void;
+  /** Re-run the automatic initialization after it failed. */
+  onProvisionRetry: () => void;
   /** Re-run the pointer read after a failed revalidation left a cached card on screen. */
   onRetry: () => void;
+  /** The automatic initialization failed — the card owns that message, not a toast. */
+  provisionFailed: boolean;
   provisioning: boolean;
   /** Undefined until the pointer read settles; `null` once it settles with no managed default. */
   snapshot: AdminDefaultAgentSnapshot | null | undefined;
@@ -57,7 +63,17 @@ export interface DefaultAgentSectionProps {
  * it is always visible, and the table below never repeats it.
  */
 export const DefaultAgentSection = memo<DefaultAgentSectionProps>(
-  ({ canEdit, canProvision, error, onEdit, onProvision, onRetry, provisioning, snapshot }) => {
+  ({
+    canEdit,
+    canProvision,
+    error,
+    onEdit,
+    onProvisionRetry,
+    onRetry,
+    provisionFailed,
+    provisioning,
+    snapshot,
+  }) => {
     const { t } = useTranslation('admin');
 
     // A failed revalidation on top of a settled read is no reason to hide the assistant every
@@ -71,23 +87,30 @@ export const DefaultAgentSection = memo<DefaultAgentSectionProps>(
         return <Text type={'secondary'}>{t('agentCatalog.defaultAgent.loading')}</Text>;
       }
 
+      // There is no "start managing the default" step: it must simply be there, so a settled
+      // "no default" is a state being repaired, not a choice waiting on the admin.
       if (!snapshot) {
-        return (
-          <Flexbox align={'flex-start'} gap={12}>
-            <Text type={'secondary'}>{t('agentCatalog.defaultAgent.empty.description')}</Text>
-            {canProvision ? (
-              <Button loading={provisioning} type={'primary'} onClick={onProvision}>
-                {t('agentCatalog.defaultAgent.provision.action')}
+        if (!canProvision) {
+          return (
+            <Text type={'secondary'}>{t('agentCatalog.defaultAgent.provision.readOnly')}</Text>
+          );
+        }
+        if (provisionFailed) {
+          return (
+            <Flexbox align={'flex-start'} gap={12}>
+              <Text type={'danger'}>{t('agentCatalog.defaultAgent.provision.error')}</Text>
+              <Button loading={provisioning} onClick={onProvisionRetry}>
+                {t('agentCatalog.dependency.retry')}
               </Button>
-            ) : (
-              <Text type={'secondary'}>{t('agentCatalog.defaultAgent.empty.readOnly')}</Text>
-            )}
-          </Flexbox>
-        );
+            </Flexbox>
+          );
+        }
+        return <Text type={'secondary'}>{t('agentCatalog.defaultAgent.preparing')}</Text>;
       }
 
       const { detail, item } = snapshot;
-      // Avatar and model live on the published version, not on the list row.
+      // Avatar and model live on the current version, not on the list row. The version itself is
+      // never shown: saving IS publishing here, so there is no version for an admin to reason about.
       const version = detail?.versions.find(({ id }) => id === item.identity.currentVersionId);
       const model = version?.dependencySnapshot.model;
 
@@ -106,11 +129,6 @@ export const DefaultAgentSection = memo<DefaultAgentSectionProps>(
               </Text>
               <span className={styles.meta}>
                 <StatusBadge status={item.identity.status} />
-                <Tag size={'small'}>
-                  {item.publishedVersion
-                    ? t('agentCatalog.defaultAgent.version', { version: item.publishedVersion })
-                    : t('agentCatalog.defaultAgent.unpublished')}
-                </Tag>
                 <span className={styles.metaText}>
                   {model
                     ? `${model.providerKey} · ${model.modelKey}`

@@ -64,25 +64,19 @@ export default {
   'agentCatalog.dependency.connector.search': 'Search connectors',
   'agentCatalog.dependency.connector.searchPlaceholder': 'Search platform connectors',
   'agentCatalog.conflict.description':
-    'Another administrator changed this assistant. Reopen it to load the latest version, then reapply your change.',
+    'Another administrator changed this assistant. Reopen it to load the current configuration, then reapply your change.',
   'agentCatalog.create.submit': 'New assistant',
   'agentCatalog.defaultAgent.description': 'The assistant every member sees first.',
-  'agentCatalog.defaultAgent.empty.description':
-    'No managed default assistant yet — members are using the built-in one.',
-  'agentCatalog.defaultAgent.empty.readOnly':
-    'Taking it over needs permission to create and publish assistants.',
   'agentCatalog.defaultAgent.loadError': 'Could not load the default assistant.',
   'agentCatalog.defaultAgent.loading': 'Loading…',
   'agentCatalog.defaultAgent.modelUnknown': 'Model unavailable',
-  'agentCatalog.defaultAgent.provision.action': 'Take over the default assistant',
-  'agentCatalog.defaultAgent.provision.description':
-    'Every member’s default assistant becomes this one: its name, avatar, model, prompt and opening message are yours to set. The built-in default is no longer shown.',
-  'agentCatalog.defaultAgent.provision.submit': 'Take it over',
-  'agentCatalog.defaultAgent.provision.success': 'The default assistant is now managed here.',
-  'agentCatalog.defaultAgent.provision.title': 'Take over the default assistant',
+  'agentCatalog.defaultAgent.preparing': 'Preparing the default assistant…',
+  'agentCatalog.defaultAgent.provision.error':
+    'The default assistant could not be prepared. Members are using the built-in one meanwhile.',
+  'agentCatalog.defaultAgent.provision.readOnly':
+    'The default assistant is not ready yet. Ask an administrator with the right permissions.',
+  'agentCatalog.defaultAgent.provision.success': 'The default assistant is ready.',
   'agentCatalog.defaultAgent.title': 'Default assistant',
-  'agentCatalog.defaultAgent.unpublished': 'No published version yet',
-  'agentCatalog.defaultAgent.version': 'Version {{version}}',
   'agentCatalog.defaultInbox': 'Default',
   'agentCatalog.delete.action': 'Delete',
   'agentCatalog.delete.description':
@@ -133,7 +127,7 @@ export default {
   'agentCatalog.editor.section.assignmentDesc':
     'Who receives this assistant. Changes apply when you save.',
   'agentCatalog.editor.versionUnavailable':
-    'The published version of this assistant could not be loaded, so its configuration cannot be edited here.',
+    'The current configuration of this assistant could not be loaded, so it cannot be edited here.',
   'agentCatalog.errors.generic':
     'The action failed. Your input is kept; check your connection and retry.',
   'agentCatalog.editor.avatar': 'Avatar',
@@ -147,7 +141,7 @@ export default {
     'Checking platform skills… Saving is unavailable until this finishes.',
   'agentCatalog.editor.cancel': 'Cancel',
   'agentCatalog.editor.conflict':
-    'Another administrator saved this assistant while you were editing. Close and reopen it to load the latest version.',
+    'Another administrator saved this assistant while you were editing. Close and reopen it to load the current configuration.',
   'agentCatalog.editor.description': 'Description',
   'agentCatalog.editor.descriptionPlaceholder': 'What this assistant helps members do',
   'agentCatalog.editor.effectHint': 'Changes apply to assigned members after saving.',
