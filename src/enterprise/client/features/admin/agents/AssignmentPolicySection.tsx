@@ -111,6 +111,12 @@ export const AssignmentPolicySection = memo<AssignmentPolicySectionProps>(
     const { draft, truncated } = assignments;
     const describe = (entry: AssignmentEntry) =>
       entry.targetType === 'global' ? t('agentCatalog.assignment.target.global') : entry.targetId;
+    /**
+     * The mandatory global row IS the default assistant's delivery to every member — dropping it
+     * would silently demote the platform default. The server owns it; the editor shows it.
+     */
+    const locked = (entry: AssignmentEntry) =>
+      isDefaultInbox && entry.targetType === 'global' && entry.mode === 'mandatory';
 
     return (
       <div className={styles.stack}>
@@ -230,17 +236,21 @@ export const AssignmentPolicySection = memo<AssignmentPolicySectionProps>(
                 </span>
                 <span className={styles.target}>{describe(entry)}</span>
                 <span className={styles.rowActions} hidden={truncated}>
-                  <Button
-                    danger
-                    size={'small'}
-                    type={'text'}
-                    aria-label={t('agentCatalog.assignment.removeTarget', {
-                      target: describe(entry),
-                    })}
-                    onClick={() => assignments.remove(entry)}
-                  >
-                    {t('agentCatalog.assignment.remove')}
-                  </Button>
+                  {locked(entry) ? (
+                    <span className={styles.hint}>{t('agentCatalog.assignment.lockedTag')}</span>
+                  ) : (
+                    <Button
+                      danger
+                      size={'small'}
+                      type={'text'}
+                      aria-label={t('agentCatalog.assignment.removeTarget', {
+                        target: describe(entry),
+                      })}
+                      onClick={() => assignments.remove(entry)}
+                    >
+                      {t('agentCatalog.assignment.remove')}
+                    </Button>
+                  )}
                 </span>
               </div>
             ))}

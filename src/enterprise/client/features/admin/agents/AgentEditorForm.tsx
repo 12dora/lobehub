@@ -74,6 +74,9 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
     // One flag for every config control: an assignment-only operator (or an assistant whose live
     // version could not be loaded) reads the configuration but never authors it.
     const readOnly = !form.configEditable;
+    // The platform reserves the default assistant's identity and its mandatory global delivery —
+    // everything that makes it *the default*. Its presentation stays fully editable.
+    const isDefaultInbox = form.systemKey === 'default-inbox';
     const keyInvalid = form.isCreate && form.agentKey.length > 0 && !form.keyValid;
     // An empty identifier is only worth raising once the admin has named the assistant — before
     // that the whole form is empty and there is nothing to correct yet.
@@ -120,6 +123,7 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
                         changeAgentKey={form.changeAgentKey}
                         config={config}
                         isCreate={form.isCreate}
+                        isDefaultInbox={isDefaultInbox}
                         keyInvalid={keyInvalid}
                         keyMissing={keyMissing}
                         patchConfig={form.patchConfig}
@@ -170,7 +174,7 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
                     <div className={styles.groupBody}>
                       <AssignmentPolicySection
                         assignments={form.assignments}
-                        isDefaultInbox={form.systemKey === 'default-inbox'}
+                        isDefaultInbox={isDefaultInbox}
                       />
                     </div>
                   </FormGroup>

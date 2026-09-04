@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMockAdminAgentsClient } from './__tests__/mockAdminAgents';
 import {
   fetchAdminAgentDetail,
+  fetchDefaultAdminAgent,
   fetchPublishedAdminAgentReplacements,
   findDefaultAdminAgent,
 } from './useAdminAgents';
@@ -127,6 +128,46 @@ describe('Admin Agent detail aggregate through the injected client boundary', ()
     expect(found?.identity.isDefault).toBe(true);
     expect(list).toHaveBeenCalledTimes(1);
     expect(list).toHaveBeenCalledWith({ isDefault: true, limit: 1 });
+  });
+
+  it('pairs the default pointer with the published version the pinned card renders', async () => {
+    const client = createMockAdminAgentsClient();
+
+    const snapshot = await fetchDefaultAdminAgent(client);
+
+    expect(snapshot?.item.identity.systemKey).toBe('default-inbox');
+    // The list row carries neither an avatar nor a model — both come from the aggregate.
+    const current = snapshot?.detail?.versions.find(
+      ({ id }) => id === snapshot.item.identity.currentVersionId,
+    );
+    expect(current?.dependencySnapshot.model.providerKey).toBeTruthy();
+  });
+
+  it('reports "no managed default" as null rather than an error', async () => {
+    const client = createMockAdminAgentsClient();
+    vi.spyOn(client, 'list').mockResolvedValue({ items: [], nextCursor: null });
+
+    await expect(fetchDefaultAdminAgent(client)).resolves.toBeNull();
+  });
+
+  it('keeps the pinned default on screen when only its aggregate read fails', async () => {
+    const client = createMockAdminAgentsClient();
+    vi.spyOn(client, 'listVersions').mockRejectedValue(new Error('offline'));
+
+    const snapshot = await fetchDefaultAdminAgent(client);
+
+    // Losing the avatar and the model line is not a reason to hide the assistant itself.
+    expect(snapshot?.item.identity.id).toBe('agent-inbox');
+    expect(snapshot?.detail).toBeNull();
+  });
+
+  it('refuses to provision a second default, which is why the takeover is offered only once', async () => {
+    // The seeded platform already has `agent-inbox` as its managed default.
+    const client = createMockAdminAgentsClient();
+
+    await expect(client.provisionDefaultInbox({ locale: 'zh-CN' })).rejects.toThrow(
+      'PLATFORM_AGENT_DEFAULT_ALREADY_EXISTS',
+    );
   });
 
   it('loads one published replacement page without multi-page drain', async () => {

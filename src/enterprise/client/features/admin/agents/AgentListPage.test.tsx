@@ -11,6 +11,9 @@ import type { AdminAgentListItem } from './types';
 
 const mocks = vi.hoisted(() => ({
   archive: vi.fn(),
+  confirmModal: vi.fn(),
+  defaultAgent: {} as Record<string, unknown>,
+  defaultAgentMutate: vi.fn(),
   fetchDetail: vi.fn(),
   get: vi.fn(),
   list: {} as Record<string, unknown>,
@@ -18,11 +21,14 @@ const mocks = vi.hoisted(() => ({
   openDelete: vi.fn(),
   openEditor: vi.fn(),
   permissions: [] as string[],
+  provisionDefaultInbox: vi.fn(),
   refresh: vi.fn(),
   removeItem: vi.fn(),
   rowActionParams: [] as unknown[],
+  runAdminMutation: vi.fn(),
   setDefaultInbox: vi.fn(),
   toastError: vi.fn(),
+  toastSuccess: vi.fn(),
   toastWarning: vi.fn(),
   updateItem: vi.fn(),
 }));
@@ -50,7 +56,13 @@ vi.mock('./useAdminAgents', () => ({
     mocks.listInputs.push(structuredClone(input));
     return mocks.list;
   },
+  useDefaultAdminAgent: () => mocks.defaultAgent,
 }));
+// The takeover's reauth retry belongs to runAdminMutation's own tests; here it just commits.
+vi.mock('@/enterprise/client/features/admin/primitives/runAdminMutation', () => ({
+  runAdminMutation: (...args: unknown[]) => mocks.runAdminMutation(...args),
+}));
+vi.mock('i18next', () => ({ default: { language: 'en-US', resolvedLanguage: 'zh-CN' } }));
 vi.mock('./openAgentEditorModal', () => ({
   openAgentEditorModal: (...args: unknown[]) => mocks.openEditor(...args),
 }));
@@ -67,6 +79,7 @@ vi.mock('./openDeleteAgentModal', () => ({
 vi.mock('@/enterprise/client/services/adminAgents', () => ({
   adminAgentsService: {
     get: (...args: unknown[]) => mocks.get(...args),
+    provisionDefaultInbox: (...args: unknown[]) => mocks.provisionDefaultInbox(...args),
   },
 }));
 // Only the brand mark is stubbed — it drags in the real Icon styles, which the
@@ -89,6 +102,8 @@ vi.mock('@/components/AsyncError', () => ({
   ),
 }));
 vi.mock('@lobehub/ui', () => ({
+  Avatar: ({ avatar }: { avatar?: string }) => <img alt="avatar" src={avatar} />,
+  Block: ({ children }: { children?: ReactNode }) => <section>{children}</section>,
   // Spreads props like the real component: the inline loader's `role="status"`
   // and its accessible label reach the DOM through here.
   Center: ({ children, ...props }: { children?: ReactNode } & Record<string, unknown>) => (
@@ -109,7 +124,12 @@ vi.mock('@lobehub/ui', () => ({
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 vi.mock('@lobehub/ui/base-ui', () => ({
-  Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
+  Button: ({ children, loading, ...props }: any) => (
+    <button data-loading={String(Boolean(loading))} {...props}>
+      {children}
+    </button>
+  ),
+  confirmModal: (...args: unknown[]) => mocks.confirmModal(...args),
   // Items render inline: the menu's own open/close behaviour is base-ui's, not this page's.
   DropdownMenu: ({ children, items }: any) => (
     <span data-testid="row-more">
@@ -143,7 +163,7 @@ vi.mock('@lobehub/ui/base-ui', () => ({
   ),
   toast: {
     error: (...args: unknown[]) => mocks.toastError(...args),
-    success: vi.fn(),
+    success: (...args: unknown[]) => mocks.toastSuccess(...args),
     warning: (...args: unknown[]) => mocks.toastWarning(...args),
   },
 }));
@@ -298,6 +318,43 @@ const pagination = (over: Record<string, unknown>) => ({
   ...over,
 });
 
+/** What `useDefaultAdminAgent` hands the page: an SWR result whose data is the pinned snapshot. */
+const defaultAgentState = (over: Record<string, unknown> = {}) => ({
+  data: undefined,
+  error: undefined,
+  mutate: mocks.defaultAgentMutate,
+  ...over,
+});
+
+/** A provisioned default: the pointer row plus the published version the card reads. */
+const defaultSnapshot = (id = 'agent-inbox') => ({
+  detail: {
+    identity: { currentVersionId: `version-${id}`, id },
+    versions: [
+      {
+        config: { avatar: '🤖', backgroundColor: '#222', displayName: 'Company assistant' },
+        dependencySnapshot: { model: { modelKey: 'gpt-4o-mini', providerKey: 'openai' } },
+        id: `version-${id}`,
+      },
+    ],
+  },
+  item: {
+    ...item(id, {
+      currentVersionId: `version-${id}`,
+      isDefault: true,
+      systemKey: 'default-inbox',
+    }),
+    displayName: 'Company assistant',
+    publishedVersion: '1.2.0',
+  },
+});
+
+/** Run whatever `confirmModal` was handed as its confirm callback. */
+const confirmProvision = async () => {
+  const { onOk } = mocks.confirmModal.mock.calls.at(-1)![0] as { onOk: () => Promise<void> };
+  await onOk();
+};
+
 const renderPage = () =>
   render(
     <MemoryRouter>
@@ -310,6 +367,18 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ];
     mocks.list = pagination({});
     mocks.listInputs = [];
+    mocks.defaultAgent = defaultAgentState({ data: null });
+    mocks.defaultAgentMutate.mockReset().mockResolvedValue(undefined);
+    mocks.confirmModal.mockReset();
+    mocks.provisionDefaultInbox.mockReset();
+    mocks.toastSuccess.mockReset();
+    // Default: the mutation commits.
+    mocks.runAdminMutation
+      .mockReset()
+      .mockImplementation(async ({ run }: { run: () => Promise<void> }) => {
+        await run();
+        return true;
+      });
     mocks.archive.mockReset();
     mocks.setDefaultInbox.mockReset();
     mocks.rowActionParams = [];
@@ -442,6 +511,8 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     await onDeleted();
     // Committed delete drops the row from bound pages (not a bare revalidate that can leave it).
     expect(mocks.removeItem).toHaveBeenCalledWith('agent-1');
+    // The pinned key goes with it — the card must never point at a deleted assistant.
+    expect(mocks.defaultAgentMutate).toHaveBeenCalledOnce();
   });
 
   it('surfaces a localized preflight failure without opening the delete modal', async () => {
@@ -584,6 +655,8 @@ describe('AgentListPage with the real AsyncBoundary', () => {
       displayName: 'Research v2',
       publishedVersion: '1.0.1',
     });
+    // An ordinary assistant is not the pinned one: no reason to re-read the pointer aggregate.
+    expect(mocks.defaultAgentMutate).not.toHaveBeenCalled();
   });
 
   it('reports a failed post-save revalidation instead of leaving a stale row unexplained', async () => {
@@ -748,7 +821,7 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     );
   });
 
-  it('drops 归档 for an already-archived row and 删除 for the default one', () => {
+  it('drops 归档 for an already-archived row, and both 归档 and 删除 for the default one', () => {
     mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_DELETE];
     mocks.list = pagination({
       boundaryData: [item('a', { status: 'archived' })],
@@ -764,7 +837,8 @@ describe('AgentListPage with the real AsyncBoundary', () => {
       items: [item('a', { isDefault: true })],
     });
     renderPage();
-    expect(screen.getByText('agentCatalog.archive.submit')).toBeTruthy();
+    // The default is every member's assistant; it is managed from the pinned card, not a row menu.
+    expect(screen.queryByText('agentCatalog.archive.submit')).toBeNull();
     expect(screen.queryByText('agentCatalog.delete.action')).toBeNull();
   });
 
@@ -776,14 +850,22 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     );
   });
 
-  it('wires the row actions to revalidate the bound list', () => {
+  it('wires 设为默认 / 归档 to invalidate the table AND the pinned default card', async () => {
     mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_PUBLISH];
+    mocks.defaultAgent = defaultAgentState({ data: defaultSnapshot() });
     mocks.list = pagination({ boundaryData: [item('a')], items: [item('a')] });
     renderPage();
-    expect(mocks.rowActionParams.at(-1)).toMatchObject({
-      authMethod: 'password',
-      onChanged: mocks.refresh,
-    });
+
+    const { authMethod, onChanged } = mocks.rowActionParams.at(-1) as {
+      authMethod: string;
+      onChanged: () => Promise<void>;
+    };
+    expect(authMethod).toBe('password');
+    // Promotion rewrites the pointer itself: refreshing only the table leaves the pinned card
+    // showing the assistant that just stopped being everyone's default.
+    await onChanged();
+    expect(mocks.refresh).toHaveBeenCalledOnce();
+    expect(mocks.defaultAgentMutate).toHaveBeenCalledOnce();
   });
 
   it('opens the editor for an assignment-only operator, with the config read-only', async () => {
@@ -873,21 +955,21 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     expect(screen.getByText('agentCatalog.bulk.delete.action')).toBeTruthy();
   });
 
-  it('disables the bulk entries whose selection holds no eligible row', () => {
+  it('disables the bulk entry whose selection holds no eligible row', () => {
     mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_DELETE];
-    // The default assistant can be neither bulk-archived (needs a successor) nor deleted.
-    const row = item('agent-default', { isDefault: true });
+    // The default assistant is pinned above and never selectable here, so the reachable ineligible
+    // selection is an already-archived row: it cannot be archived again, but it can still be deleted.
+    const row = item('agent-archived', { status: 'archived' });
     mocks.list = pagination({ boundaryData: [row], items: [row] });
     renderPage();
 
-    fireEvent.click(screen.getByLabelText('select:agent-default'));
+    fireEvent.click(screen.getByLabelText('select:agent-archived'));
     const archive = screen.getByText('agentCatalog.bulk.archive.action') as HTMLButtonElement;
     const remove = screen.getByText('agentCatalog.bulk.delete.action') as HTMLButtonElement;
     expect(archive.disabled).toBe(true);
-    expect(remove.disabled).toBe(true);
     // The reason is spelled out rather than left to a vanished menu entry.
     expect(archive.getAttribute('data-desc')).toBe('agentCatalog.bulk.archive.ineligible');
-    expect(remove.getAttribute('data-desc')).toBe('agentCatalog.bulk.delete.ineligible');
+    expect(remove.disabled).toBe(false);
   });
 
   it('keeps a selected row that scrolled out of the loaded pages', () => {
@@ -911,5 +993,215 @@ describe('AgentListPage with the real AsyncBoundary', () => {
       </MemoryRouter>,
     );
     expect(screen.getByText('agentCatalog.list.bulk.actions')).toBeTruthy();
+  });
+
+  describe('the pinned 默认助理 section', () => {
+    it('shows the managed default with the presentation the members actually see', () => {
+      mocks.defaultAgent = defaultAgentState({ data: defaultSnapshot() });
+      renderPage();
+
+      expect(screen.getByText('agentCatalog.defaultAgent.title')).toBeTruthy();
+      expect(screen.getByText('Company assistant')).toBeTruthy();
+      // Avatar and model live on the published version, not on the list row.
+      expect(screen.getByAltText('avatar').getAttribute('src')).toBe('🤖');
+      expect(screen.getByText('openai · gpt-4o-mini')).toBeTruthy();
+      expect(screen.getByText('agentCatalog.defaultAgent.version')).toBeTruthy();
+      expect(screen.queryByText('agentCatalog.defaultAgent.empty.description')).toBeNull();
+    });
+
+    it('keeps the pinned default out of the table so it is not two rows to reconcile', () => {
+      mocks.defaultAgent = defaultAgentState({ data: defaultSnapshot() });
+      // The row's own flag is behind here (a page loaded before the promotion) — the pointer id is
+      // the fallback that still keeps the duplicate off screen.
+      const rows = [item('agent-inbox'), item('agent-2')];
+      mocks.list = pagination({ boundaryData: rows, items: rows });
+      renderPage();
+
+      expect(screen.getByText('rows:1')).toBeTruthy();
+      expect(screen.queryByText('activate:agent-inbox')).toBeNull();
+      expect(screen.getByText('activate:agent-2')).toBeTruthy();
+    });
+
+    it('drops the default row on the first page, without waiting for the pinned read', () => {
+      // The rows already say which one is the default, so the duplicate never flashes on screen
+      // while the (slower) pinned aggregate is still in flight.
+      mocks.defaultAgent = defaultAgentState({ data: undefined });
+      const rows = [item('agent-inbox', { isDefault: true }), item('agent-2')];
+      mocks.list = pagination({ boundaryData: rows, items: rows });
+      renderPage();
+
+      expect(screen.getByText('rows:1')).toBeTruthy();
+      expect(screen.queryByText('activate:agent-inbox')).toBeNull();
+    });
+
+    it('opens the editor for the pinned default through the authoritative aggregate', async () => {
+      mocks.permissions = [
+        PLATFORM_PERMISSIONS.AGENT_READ,
+        PLATFORM_PERMISSIONS.AGENT_UPDATE,
+        PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+      ];
+      mocks.defaultAgent = defaultAgentState({ data: defaultSnapshot() });
+      const detail = { identity: { id: 'agent-inbox' }, versions: [] };
+      mocks.fetchDetail.mockResolvedValue(detail);
+      renderPage();
+
+      fireEvent.click(screen.getByText('agentCatalog.action.edit'));
+      await waitFor(() => expect(mocks.openEditor).toHaveBeenCalledOnce());
+      expect(mocks.fetchDetail).toHaveBeenCalledWith('agent-inbox', expect.anything(), false);
+      expect(mocks.openEditor.mock.calls[0]![0]).toMatchObject({ agent: detail });
+    });
+
+    it('refreshes the pinned card after the pinned assistant is saved from the editor', async () => {
+      mocks.permissions = [
+        PLATFORM_PERMISSIONS.AGENT_READ,
+        PLATFORM_PERMISSIONS.AGENT_UPDATE,
+        PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+      ];
+      mocks.defaultAgent = defaultAgentState({ data: defaultSnapshot() });
+      // No table rows: the only 编辑 on screen belongs to the pinned card.
+      mocks.list = pagination({ boundaryData: [], isEmpty: true });
+      mocks.fetchDetail.mockResolvedValue({ identity: { id: 'agent-inbox' }, versions: [] });
+      renderPage();
+
+      fireEvent.click(screen.getByText('agentCatalog.action.edit'));
+      await waitFor(() => expect(mocks.openEditor).toHaveBeenCalledOnce());
+      const { onSaved } = mocks.openEditor.mock.calls[0]![0] as { onSaved: SavedHandler };
+      await onSaved(
+        { ...saveOutput, identity: { ...saveOutput.identity, id: 'agent-inbox' } },
+        { assignmentsChanged: false, created: false },
+      );
+
+      // The committed name / version still land on the table row it also occupies…
+      expect(mocks.updateItem).toHaveBeenCalledWith('agent-inbox', expect.any(Function));
+      // …and the card is re-read, or it keeps rendering the name / avatar / model just replaced.
+      expect(mocks.defaultAgentMutate).toHaveBeenCalledOnce();
+    });
+
+    it('refreshes the pinned card for an assignments-only save of the default', async () => {
+      mocks.permissions = [
+        PLATFORM_PERMISSIONS.AGENT_READ,
+        PLATFORM_PERMISSIONS.AGENT_UPDATE,
+        PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+      ];
+      mocks.defaultAgent = defaultAgentState({ data: defaultSnapshot() });
+      mocks.list = pagination({ boundaryData: [], isEmpty: true });
+      mocks.fetchDetail.mockResolvedValue({ identity: { id: 'agent-inbox' }, versions: [] });
+      renderPage();
+
+      fireEvent.click(screen.getByText('agentCatalog.action.edit'));
+      await waitFor(() => expect(mocks.openEditor).toHaveBeenCalledOnce());
+      const { onSaved } = mocks.openEditor.mock.calls[0]![0] as { onSaved: SavedHandler };
+      // Such a submit carries no output at all — the edited id is what identifies the default.
+      await onSaved(null, { assignmentsChanged: true, created: false });
+
+      expect(mocks.refresh).toHaveBeenCalledOnce();
+      expect(mocks.defaultAgentMutate).toHaveBeenCalledOnce();
+    });
+
+    it('refreshes the pinned card when a save makes its assistant the default', async () => {
+      mocks.permissions = [
+        PLATFORM_PERMISSIONS.AGENT_READ,
+        PLATFORM_PERMISSIONS.AGENT_UPDATE,
+        PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+      ];
+      // The pointer read has not settled, so the promotion is only visible in the save output.
+      mocks.defaultAgent = defaultAgentState({ data: undefined });
+      mocks.list = pagination({ boundaryData: [item('agent-1')], items: [item('agent-1')] });
+      mocks.fetchDetail.mockResolvedValue({ identity: { id: 'agent-1' }, versions: [] });
+      renderPage();
+
+      fireEvent.click(screen.getByText('agentCatalog.action.edit'));
+      await waitFor(() => expect(mocks.openEditor).toHaveBeenCalledOnce());
+      const { onSaved } = mocks.openEditor.mock.calls[0]![0] as { onSaved: SavedHandler };
+      await onSaved(
+        { ...saveOutput, identity: { ...saveOutput.identity, isDefault: true } },
+        { assignmentsChanged: false, created: false },
+      );
+
+      expect(mocks.defaultAgentMutate).toHaveBeenCalledOnce();
+    });
+
+    it('explains the built-in fallback and takes the default over on confirmation', async () => {
+      mocks.permissions = [
+        PLATFORM_PERMISSIONS.AGENT_READ,
+        PLATFORM_PERMISSIONS.AGENT_CREATE,
+        PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+      ];
+      mocks.defaultAgent = defaultAgentState({ data: null });
+      mocks.provisionDefaultInbox.mockResolvedValue({ identity: { id: 'agent-new' } });
+      mocks.fetchDetail.mockResolvedValue({ identity: { id: 'agent-new' }, versions: [] });
+      renderPage();
+
+      expect(screen.getByText('agentCatalog.defaultAgent.empty.description')).toBeTruthy();
+      fireEvent.click(screen.getByText('agentCatalog.defaultAgent.provision.action'));
+      // Taking over every member's default assistant is never a one-click accident.
+      expect(mocks.confirmModal).toHaveBeenCalledOnce();
+      expect(mocks.provisionDefaultInbox).not.toHaveBeenCalled();
+
+      await confirmProvision();
+
+      // The seeded copy follows the admin's own UI language.
+      expect(mocks.provisionDefaultInbox).toHaveBeenCalledWith({ locale: 'zh-CN' });
+      // Both the pinned card and the table now hold a row that did not exist a moment ago.
+      expect(mocks.defaultAgentMutate).toHaveBeenCalledOnce();
+      expect(mocks.refresh).toHaveBeenCalledOnce();
+      expect(mocks.toastSuccess).toHaveBeenCalledWith(
+        'agentCatalog.defaultAgent.provision.success',
+      );
+      // A provisioned assistant is empty until it is authored — hand over its editor.
+      await waitFor(() => expect(mocks.openEditor).toHaveBeenCalledOnce());
+      expect(mocks.fetchDetail).toHaveBeenCalledWith('agent-new', expect.anything(), false);
+    });
+
+    it('offers no takeover to an operator who cannot create and publish', () => {
+      mocks.defaultAgent = defaultAgentState({ data: null });
+      renderPage();
+
+      expect(screen.getByText('agentCatalog.defaultAgent.empty.description')).toBeTruthy();
+      expect(screen.queryByText('agentCatalog.defaultAgent.provision.action')).toBeNull();
+      expect(screen.getByText('agentCatalog.defaultAgent.empty.readOnly')).toBeTruthy();
+    });
+
+    it('reports a failed pointer read instead of claiming there is no default', () => {
+      mocks.defaultAgent = defaultAgentState({ data: undefined, error: new Error('offline') });
+      renderPage();
+
+      expect(screen.getByText('agentCatalog.defaultAgent.loadError')).toBeTruthy();
+      expect(screen.queryByText('agentCatalog.defaultAgent.empty.description')).toBeNull();
+      // Nothing was ever loaded, so there is no card to keep and nothing a retry would preserve.
+      expect(screen.queryByText('Company assistant')).toBeNull();
+      expect(screen.queryByText('agentCatalog.dependency.retry')).toBeNull();
+    });
+
+    it('keeps the last loaded card with a retry when revalidation fails', () => {
+      // Hiding the assistant every member is talking to because a background re-read failed is a
+      // worse answer than showing it and saying it may be behind.
+      mocks.defaultAgent = defaultAgentState({
+        data: defaultSnapshot(),
+        error: new Error('offline'),
+      });
+      renderPage();
+
+      expect(screen.getByText('Company assistant')).toBeTruthy();
+      expect(screen.getByText('openai · gpt-4o-mini')).toBeTruthy();
+      expect(screen.getByText('agentCatalog.defaultAgent.loadError')).toBeTruthy();
+
+      fireEvent.click(screen.getByText('agentCatalog.dependency.retry'));
+      expect(mocks.defaultAgentMutate).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the takeover offer with a retry when a settled "no default" fails to re-read', () => {
+      mocks.permissions = [
+        PLATFORM_PERMISSIONS.AGENT_READ,
+        PLATFORM_PERMISSIONS.AGENT_CREATE,
+        PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+      ];
+      mocks.defaultAgent = defaultAgentState({ data: null, error: new Error('offline') });
+      renderPage();
+
+      expect(screen.getByText('agentCatalog.defaultAgent.empty.description')).toBeTruthy();
+      expect(screen.getByText('agentCatalog.defaultAgent.provision.action')).toBeTruthy();
+      expect(screen.getByText('agentCatalog.dependency.retry')).toBeTruthy();
+    });
   });
 });

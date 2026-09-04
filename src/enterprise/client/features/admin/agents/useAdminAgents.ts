@@ -3,9 +3,10 @@
 import useSWRInfinite from 'swr/infinite';
 
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
+import { useClientDataSWR } from '@/libs/swr';
 import { adminPlatformAgentDetailAggregateOutputSchema } from '@/server/enterprise/contracts/platformAgents';
 
-import { ADMIN_AGENT_LIST_KEY } from './swrKeys';
+import { ADMIN_AGENT_DEFAULT_KEY, ADMIN_AGENT_LIST_KEY } from './swrKeys';
 import type {
   AdminAgentCollectionMeta,
   AdminAgentDetailOutput,
@@ -151,6 +152,45 @@ export const fetchAdminAgentDetail = async (
     versions: sortPlatformAgentVersionsDesc(versions.items),
   }) as AdminAgentDetailOutput;
 };
+
+/**
+ * What the pinned 默认助理 card renders: the pointer row, plus the published version behind it.
+ * The list row carries neither an avatar nor a model — both live on the version config /
+ * dependency snapshot, so the card needs the aggregate as well.
+ */
+export interface AdminDefaultAgentSnapshot {
+  /** Null when the aggregate could not be read; the card degrades instead of disappearing. */
+  detail: AdminAgentDetailOutput | null;
+  item: AdminAgentListItem;
+}
+
+/**
+ * Resolve the managed default assistant, or `null` when the platform has none (members are then
+ * served the built-in inbox). The pointer read is the authoritative half: a failed aggregate read
+ * costs the card its avatar and model line, never the pinned assistant itself.
+ */
+export const fetchDefaultAdminAgent = async (
+  client: AdminAgentsClient = adminAgentsService,
+): Promise<AdminDefaultAgentSnapshot | null> => {
+  const item = await findDefaultAdminAgent(client);
+  if (!item) return null;
+  const detail = await fetchAdminAgentDetail(item.identity.id, client, false).catch(() => null);
+  return { detail, item };
+};
+
+/**
+ * The pinned default assistant. Its own SWR entry, deliberately separate from the paginated list:
+ * the card must stay put while the table is searched, filtered, or paged.
+ */
+export const useDefaultAdminAgent = (
+  enabled: boolean,
+  client: AdminAgentsClient = adminAgentsService,
+) =>
+  useClientDataSWR<AdminDefaultAgentSnapshot | null>(
+    enabled ? ADMIN_AGENT_DEFAULT_KEY : null,
+    () => fetchDefaultAdminAgent(client),
+    { revalidateOnFocus: false },
+  );
 
 export interface AdminAgentListPagination {
   /**

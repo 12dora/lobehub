@@ -95,6 +95,21 @@ export type {
   AdminPlatformAgentVersionsListOutput,
 };
 
+/**
+ * Take over the platform default assistant: the server creates the `default-inbox` Agent and its
+ * mandatory global assignment in one transaction, seeding the copy from `locale`.
+ *
+ * Declared here rather than re-exported from the server contracts so the client compiles against
+ * the agreed shape independently of when the procedure lands.
+ */
+export interface AdminPlatformAgentProvisionDefaultInboxInput {
+  /** UI language the seeded name / prompt / opening message are written in. */
+  locale?: string;
+}
+
+/** Same aggregate root `get` returns — the freshly provisioned default, ready to edit. */
+export type AdminPlatformAgentProvisionDefaultInboxOutput = AdminPlatformAgentGetOutput;
+
 export type AdminAgentListInput = AdminPlatformAgentListInput;
 export type AdminAgentListItem = AdminPlatformAgentListOutput['items'][number];
 export type AdminAgentListOutput = AdminPlatformAgentListOutput;
@@ -177,6 +192,10 @@ export interface AdminAgentsClient {
   previewAssignment: (
     input: AdminPlatformAgentAssignmentPreviewInput,
   ) => Promise<AdminPlatformAgentAssignmentPreviewOutput>;
+  /** Create the managed `default-inbox` Agent plus its mandatory global assignment. */
+  provisionDefaultInbox: (
+    input: AdminPlatformAgentProvisionDefaultInboxInput,
+  ) => Promise<AdminPlatformAgentProvisionDefaultInboxOutput>;
   removeAssignment: (
     input: AdminPlatformAgentAssignmentRemoveInput,
   ) => Promise<AdminPlatformAgentAssignmentRemoveOutput>;

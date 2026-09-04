@@ -18,6 +18,7 @@ export default {
   'agentCatalog.assignment.enabledOff': 'Kept, but not delivered',
   'agentCatalog.assignment.enabledOn': 'Delivered once you save',
   'agentCatalog.assignment.errors.targetRequired': 'Enter the role or user ID for this target.',
+  'agentCatalog.assignment.lockedTag': 'Platform-managed',
   'agentCatalog.assignment.mode': 'Distribution mode',
   'agentCatalog.assignment.mode.default': 'Default',
   'agentCatalog.assignment.mode.mandatory': 'Mandatory',
@@ -65,6 +66,23 @@ export default {
   'agentCatalog.conflict.description':
     'Another administrator changed this assistant. Reopen it to load the latest version, then reapply your change.',
   'agentCatalog.create.submit': 'New assistant',
+  'agentCatalog.defaultAgent.description': 'The assistant every member sees first.',
+  'agentCatalog.defaultAgent.empty.description':
+    'No managed default assistant yet — members are using the built-in one.',
+  'agentCatalog.defaultAgent.empty.readOnly':
+    'Taking it over needs permission to create and publish assistants.',
+  'agentCatalog.defaultAgent.loadError': 'Could not load the default assistant.',
+  'agentCatalog.defaultAgent.loading': 'Loading…',
+  'agentCatalog.defaultAgent.modelUnknown': 'Model unavailable',
+  'agentCatalog.defaultAgent.provision.action': 'Take over the default assistant',
+  'agentCatalog.defaultAgent.provision.description':
+    'Every member’s default assistant becomes this one: its name, avatar, model, prompt and opening message are yours to set. The built-in default is no longer shown.',
+  'agentCatalog.defaultAgent.provision.submit': 'Take it over',
+  'agentCatalog.defaultAgent.provision.success': 'The default assistant is now managed here.',
+  'agentCatalog.defaultAgent.provision.title': 'Take over the default assistant',
+  'agentCatalog.defaultAgent.title': 'Default assistant',
+  'agentCatalog.defaultAgent.unpublished': 'No published version yet',
+  'agentCatalog.defaultAgent.version': 'Version {{version}}',
   'agentCatalog.defaultInbox': 'Default',
   'agentCatalog.delete.action': 'Delete',
   'agentCatalog.delete.description':
@@ -140,6 +158,8 @@ export default {
   'agentCatalog.editor.identity': 'Identity',
   'agentCatalog.editor.key': 'Identifier',
   'agentCatalog.editor.keyPlaceholder': 'research-assistant',
+  'agentCatalog.editor.keyDefaultInboxDesc':
+    'The default assistant’s identifier is reserved by the platform.',
   'agentCatalog.editor.keyDesc':
     'Permanent identifier: lowercase letters, digits and . _ -. Generated from the name; editable.',
   'agentCatalog.editor.keyInvalid':
@@ -2640,6 +2660,7 @@ export default {
   'audit.logs.action.admin.agents.create': 'Create agent',
   'audit.logs.action.admin.agents.createVersion': 'Create agent version',
   'audit.logs.action.admin.agents.delete': 'Delete agent',
+  'audit.logs.action.admin.agents.provisionDefaultInbox': 'Provision default agent',
   'audit.logs.action.admin.agents.publish': 'Publish agent',
   'audit.logs.action.admin.agents.rollback': 'Roll back agent',
   'audit.logs.action.admin.agents.rollouts.cancel': 'Cancel agent rollout',

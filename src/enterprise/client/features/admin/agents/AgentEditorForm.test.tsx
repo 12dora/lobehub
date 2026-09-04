@@ -388,6 +388,29 @@ describe('AgentEditorForm layout', () => {
     expect(helpFor('agentCatalog.editor.keyLockedDesc')).toBeTruthy();
   });
 
+  it('reserves the default assistant’s identifier and says the platform owns it', () => {
+    formMock.value = { ...baseForm(), isCreate: false, systemKey: 'default-inbox' };
+    render(<AgentEditorForm />);
+    expect(screen.getByLabelText('agentCatalog.editor.key')).toBeDisabled();
+    expect(helpFor('agentCatalog.editor.keyDefaultInboxDesc')).toBeTruthy();
+  });
+
+  it('keeps the default assistant’s presentation fully editable', () => {
+    formMock.value = { ...baseForm(), isCreate: false, systemKey: 'default-inbox' };
+    render(<AgentEditorForm />);
+
+    // Only identity and mandatory delivery are reserved — the copy members read is the admin's.
+    for (const label of [
+      'agentCatalog.editor.name',
+      'agentCatalog.editor.description',
+      'agentCatalog.editor.systemRole',
+      'agentCatalog.editor.openingMessage',
+      'agentCatalog.editor.openingQuestions',
+    ]) {
+      expect(screen.getByLabelText(label)).not.toBeDisabled();
+    }
+  });
+
   it('states the immediate effect and keeps Save closed until the form can commit', () => {
     render(<AgentEditorForm />);
     expect(screen.getByText('agentCatalog.editor.effectHint')).toBeTruthy();

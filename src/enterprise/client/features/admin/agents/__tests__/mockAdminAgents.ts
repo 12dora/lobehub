@@ -405,6 +405,76 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
         warnings,
       });
     },
+    /**
+     * Take over the default assistant: the `default-inbox` Agent and its mandatory global
+     * assignment appear together, already published. Refuses a second default, like the server.
+     */
+    provisionDefaultInbox: async ({ locale }) => {
+      if ([...records.values()].some(({ identity }) => identity.isDefault)) {
+        throw new Error('PLATFORM_AGENT_DEFAULT_ALREADY_EXISTS');
+      }
+      const id = `agent-${crypto.randomUUID()}`;
+      const version = {
+        agentId: id,
+        checksum: checksum('0'),
+        config: {
+          avatar: null,
+          backgroundColor: null,
+          description: null,
+          displayName: locale?.startsWith('zh') ? '默认助理' : 'Default assistant',
+          modelParameters: {},
+          openingMessage: null,
+          openingQuestions: [],
+          systemRole: 'You are a helpful assistant.',
+          tags: [],
+        },
+        createdAt: new Date(),
+        createdBy: 'mock-admin',
+        dependencySnapshot: {
+          connectors: [],
+          model: {
+            modelKey: 'gpt-4o-mini',
+            providerChecksum: checksum('c'),
+            providerKey: 'openai',
+            providerRevision: 1,
+          },
+          skills: [],
+        },
+        id: `version-${id}-1`,
+        version: '1.0.0',
+      };
+      const identity = {
+        agentKey: 'default-inbox',
+        currentVersionId: version.id,
+        draftSequence: 1,
+        id,
+        isDefault: true,
+        migrationRequired: false,
+        revision: 1,
+        status: 'published' as const,
+        systemKey: PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
+      };
+      const draftToken = draftTokenFromIdentity(identity);
+      records.set(id, {
+        assignments: [
+          {
+            agentId: id,
+            enabled: true,
+            id: `assignment-${id}-global`,
+            mode: 'mandatory',
+            pinnedVersionId: null,
+            targetId: PLATFORM_AGENT_GLOBAL_TARGET_ID,
+            targetType: 'global',
+            versionPolicy: 'latest_published',
+          },
+        ],
+        draftToken,
+        identity,
+        rollouts: [],
+        versions: [version],
+      });
+      return adminPlatformAgentGetOutputSchema.parse(structuredClone({ draftToken, identity }));
+    },
     removeAssignment: async (input) => {
       const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
       record.assignments = record.assignments.filter(({ id }) => id !== input.assignmentId);

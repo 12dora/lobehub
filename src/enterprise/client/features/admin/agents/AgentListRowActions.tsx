@@ -24,11 +24,13 @@ export const AgentListRowActions = memo<AgentListRowActionsProps>(
     const { t } = useTranslation('admin');
     // Default / system assistants cannot be hard-deleted (server refuses too).
     const deletable = !item.identity.isDefault && item.identity.systemKey === null;
-    // Archiving an already-archived assistant is a no-op the server rejects.
-    const archivable = item.identity.status === 'published';
+    // Archiving an already-archived assistant is a no-op the server rejects. The default is
+    // excluded outright: it is every member's assistant, and it is managed from the pinned
+    // 默认助理 section above the table, not from a row menu.
+    const archivable = item.identity.status === 'published' && !item.identity.isDefault;
     // A published row always has a current version (the DB pointer check guarantees
     // it), which is exactly what the detail page's `canSetDefaultNow` required.
-    const promotable = agentPermissions.canPublish && archivable && !item.identity.isDefault;
+    const promotable = agentPermissions.canPublish && archivable;
     // Both destructive lifecycle actions live behind 更多 so the row keeps three
     // controls at most; the everyday ones stay one click away.
     const moreActions: DropdownItem[] = [

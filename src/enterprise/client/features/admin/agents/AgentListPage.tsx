@@ -18,12 +18,15 @@ import { buildAgentListColumns } from './agentListColumns';
 import { AgentListLoadMore } from './AgentListLoadMore';
 import { AgentListToolbar } from './AgentListToolbar';
 import { deriveAdminAgentActionAvailability, deriveAdminAgentPermissions } from './controller';
+import { DefaultAgentSection } from './DefaultAgentSection';
 import { usePruneLegacyAdminAgentDrafts } from './pruneLegacyAgentDrafts';
 import type { AdminAgentListItem } from './types';
-import { useAdminAgentListPagination } from './useAdminAgents';
+import { useAdminAgentRefresh } from './useAdminAgentRefresh';
+import { useAdminAgentListPagination, useDefaultAdminAgent } from './useAdminAgents';
 import { useAgentListActions } from './useAgentListActions';
 import { useAgentListSelection } from './useAgentListSelection';
 import { useAgentRowActions } from './useAgentRowActions';
+import { useProvisionDefaultInbox } from './useProvisionDefaultInbox';
 
 const firstFilterValue = (value: FilterValue | null | undefined): string | undefined => {
   const first = Array.isArray(value) ? value[0] : value;
@@ -53,10 +56,23 @@ const AgentListPage = memo(() => {
     [searchParams, status],
   );
   const list = useAdminAgentListPagination(input, agentPermissions.canRead);
-  const refreshList = list.refresh;
   const filtered = Boolean(input.query || input.status);
-  // 设为默认助理 / 归档助理 moved here from the removed assistant detail page.
-  const rowActions = useAgentRowActions({ authMethod: authMethod ?? null, onChanged: refreshList });
+  // The pinned default assistant reads through its own key, so it survives search and paging.
+  const defaultAgent = useDefaultAdminAgent(agentPermissions.canRead);
+  const defaultAgentMutate = defaultAgent.mutate;
+  const defaultAgentId = defaultAgent.data?.item.identity.id;
+  // Card and table are two cache entries over the same assistants: every write below invalidates
+  // them through this one object, so no action can refresh half the screen.
+  const refresh = useAdminAgentRefresh({
+    refreshDefaultAgent: defaultAgentMutate,
+    refreshList: list.refresh,
+  });
+  // 设为默认助理 / 归档助理 moved here from the removed assistant detail page. Promotion rewrites the
+  // pointer itself, so it is the clearest case for invalidating both surfaces.
+  const rowActions = useAgentRowActions({
+    authMethod: authMethod ?? null,
+    onChanged: refresh.defaultAndList,
+  });
   const { clearSelection, rowSelection, selectedRows } = useAgentListSelection();
   // Archive and hard delete both sit behind AGENT_DELETE: without it the checkbox column would
   // only ever collect rows nothing can act on.
@@ -65,15 +81,32 @@ const AgentListPage = memo(() => {
   const canOpenEditor = availability.canEdit || agentPermissions.canAssign;
   const hasRowActions = canOpenEditor || agentPermissions.canDelete || agentPermissions.canPublish;
 
-  const { createAgent, handleBulkDone, openDelete, openEditor } = useAgentListActions({
-    agentPermissions,
-    authMethod,
-    canEditConfig: availability.canEdit,
-    clearSelection,
-    refreshList,
-    removeListItem: list.removeItem,
-    updateListItem: list.updateItem,
+  const { createAgent, handleBulkDone, openDelete, openEditor, openEditorForAgentId } =
+    useAgentListActions({
+      agentPermissions,
+      authMethod,
+      canEditConfig: availability.canEdit,
+      clearSelection,
+      defaultAgentId,
+      refresh,
+      removeListItem: list.removeItem,
+      updateListItem: list.updateItem,
+    });
+
+  const { provision, provisioning } = useProvisionDefaultInbox({
+    authMethod: authMethod ?? null,
+    onProvisioned: openEditorForAgentId,
+    refresh: refresh.defaultAndList,
   });
+  // The card above already shows it in full; repeating the row would just be two truths to keep
+  // in sync on screen. Rows carry `isDefault` themselves, so the duplicate is gone with the first
+  // page instead of waiting on the pinned aggregate; the pointer id stays as a fallback for a row
+  // whose flag is behind.
+  const rows = useMemo(
+    () =>
+      list.items.filter(({ identity }) => !identity.isDefault && identity.id !== defaultAgentId),
+    [defaultAgentId, list.items],
+  );
 
   // Every column carries an explicit width so the table runs `tableLayout: fixed` (see `scroll.x`
   // below): under `auto`, a CJK header collapses to one character per line.
@@ -137,6 +170,16 @@ const AgentListPage = memo(() => {
         ) : null
       }
     >
+      <DefaultAgentSection
+        canEdit={canOpenEditor}
+        canProvision={availability.canCreate}
+        error={defaultAgent.error}
+        provisioning={provisioning}
+        snapshot={defaultAgent.data}
+        onEdit={(agentId) => void openEditorForAgentId(agentId)}
+        onProvision={provision}
+        onRetry={() => void defaultAgentMutate()}
+      />
       <AsyncBoundary
         data={list.boundaryData}
         error={list.error}
@@ -152,7 +195,7 @@ const AgentListPage = memo(() => {
         <Flexbox gap={12}>
           <DataTable<AdminAgentListItem>
             columns={columns}
-            dataSource={list.items}
+            dataSource={rows}
             rowKey={(item) => item.identity.id}
             rowSelection={canBulk ? rowSelection : undefined}
             // Fixed layout + horizontal scroll: honour the column widths instead of letting the
@@ -181,7 +224,7 @@ const AgentListPage = memo(() => {
           <AgentListLoadMore
             hasMore={list.hasMore}
             isLoadingMore={list.isLoadingMore}
-            itemCount={list.items.length}
+            itemCount={rows.length}
             loadMore={list.loadMore}
             loadMoreError={list.loadMoreError}
             retry={list.retry}

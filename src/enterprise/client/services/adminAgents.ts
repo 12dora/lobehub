@@ -29,6 +29,7 @@ export const createLambdaAdminAgentsClient = (): AdminAgentsClient => ({
   listRollouts: (input) => lambdaClient.admin.agents.rollouts.list.query(input),
   listVersions: (input) => lambdaClient.admin.agents.listVersions.query(input),
   previewAssignment: (input) => lambdaClient.admin.agents.assignments.preview.query(input),
+  provisionDefaultInbox: (input) => lambdaClient.admin.agents.provisionDefaultInbox.mutate(input),
   removeAssignment: (input) => lambdaClient.admin.agents.assignments.remove.mutate(input),
   retryRollout: (input) => lambdaClient.admin.agents.rollouts.retry.mutate(input),
   rollback: (input) => lambdaClient.admin.agents.rollback.mutate(input),

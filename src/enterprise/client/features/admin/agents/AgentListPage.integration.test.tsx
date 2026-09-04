@@ -21,6 +21,12 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
 vi.mock('@/enterprise/client/services/adminAgents', () => ({
   adminAgentsService: { capabilities: { rollouts: false }, list: mocks.list },
 }));
+// The table's own SWR is what this file exercises, so the pinned default is pinned to "none":
+// otherwise its pointer read would race the table for the same mocked `list`.
+vi.mock('./useAdminAgents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./useAdminAgents')>()),
+  useDefaultAdminAgent: () => ({ data: null, error: undefined, mutate: vi.fn() }),
+}));
 vi.mock('./openAgentEditorModal', () => ({ openAgentEditorModal: vi.fn() }));
 vi.mock('./pruneLegacyAgentDrafts', () => ({ usePruneLegacyAdminAgentDrafts: vi.fn() }));
 vi.mock('@/components/Loading/BrandTextLoading', () => ({
@@ -31,6 +37,8 @@ vi.mock('@/components/NeuralNetworkLoading', () => ({
 }));
 vi.mock('@/components/AsyncError', () => ({ default: () => <div role="alert">error</div> }));
 vi.mock('@lobehub/ui', () => ({
+  Avatar: () => <span />,
+  Block: ({ children }: { children?: ReactNode }) => <section>{children}</section>,
   Center: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Empty: ({ action, description }: { action?: ReactNode; description?: ReactNode }) => (
     <div>

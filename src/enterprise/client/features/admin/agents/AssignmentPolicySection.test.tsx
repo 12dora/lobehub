@@ -186,4 +186,31 @@ describe('AssignmentPolicySection', () => {
     render(<AssignmentPolicySection isDefaultInbox assignments={assignments} />);
     expect(screen.getByText('agentCatalog.assignment.defaultInboxHint')).toBeTruthy();
   });
+
+  it('locks the default assistant’s mandatory global delivery instead of offering to drop it', () => {
+    assignments = draftState({
+      entries: [
+        entry({ id: 'global', mode: 'mandatory', targetId: 'global', targetType: 'global' }),
+        entry({ id: 'extra', mode: 'optional', targetId: 'user-2', targetType: 'user' }),
+      ],
+    });
+    render(<AssignmentPolicySection isDefaultInbox assignments={assignments} />);
+
+    // Removing it would silently demote the platform default — the server owns that row.
+    expect(screen.getByText('agentCatalog.assignment.lockedTag')).toBeTruthy();
+    expect(screen.getAllByText('agentCatalog.assignment.remove')).toHaveLength(1);
+    expect(screen.getByLabelText('agentCatalog.assignment.removeTarget|user-2')).toBeTruthy();
+  });
+
+  it('leaves the same mandatory global row removable on an ordinary assistant', () => {
+    assignments = draftState({
+      entries: [
+        entry({ id: 'global', mode: 'mandatory', targetId: 'global', targetType: 'global' }),
+      ],
+    });
+    render(<AssignmentPolicySection assignments={assignments} />);
+
+    expect(screen.queryByText('agentCatalog.assignment.lockedTag')).toBeNull();
+    expect(screen.getByText('agentCatalog.assignment.remove')).toBeTruthy();
+  });
 });

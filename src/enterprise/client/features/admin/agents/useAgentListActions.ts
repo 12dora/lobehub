@@ -7,13 +7,14 @@ import { useTranslation } from 'react-i18next';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
+import type { AgentEditorSaveMeta } from './agentEditorCommitSteps';
 import { applyAgentSaveOutputToListItem } from './applySaveOutput';
 import type { deriveAdminAgentPermissions } from './controller';
 import { getAdminAgentErrorMessage } from './errorPresentation';
-import type { AgentEditorModalProps } from './openAgentEditorModal';
 import { openAgentEditorModal } from './openAgentEditorModal';
 import { openDeleteAgentModal } from './openDeleteAgentModal';
-import type { AdminAgentListItem } from './types';
+import type { AdminAgentListItem, AdminPlatformAgentSaveOutput } from './types';
+import type { AdminAgentRefresh } from './useAdminAgentRefresh';
 import { fetchAdminAgentDetail } from './useAdminAgents';
 
 export interface UseAgentListActionsParams {
@@ -22,7 +23,10 @@ export interface UseAgentListActionsParams {
   /** AGENT_UPDATE — an assignment-only operator still opens the editor, read-only. */
   canEditConfig: boolean;
   clearSelection: () => void;
-  refreshList: () => Promise<unknown>;
+  /** The pinned default's id, once its pointer read has settled. */
+  defaultAgentId: string | undefined;
+  /** The shared invalidator for both surfaces — never a bare list refresher. */
+  refresh: AdminAgentRefresh;
   removeListItem: (id: string) => Promise<unknown>;
   updateListItem: (
     id: string,
@@ -39,7 +43,8 @@ export const useAgentListActions = ({
   authMethod,
   canEditConfig,
   clearSelection,
-  refreshList,
+  defaultAgentId,
+  refresh,
   removeListItem,
   updateListItem,
 }: UseAgentListActionsParams) => {
@@ -49,43 +54,65 @@ export const useAgentListActions = ({
    * The committed submit lands on the list. A pure config save can be applied to the one row it
    * changed; a create, or anything that wrote an assignment, changes counters the output does not
    * carry — those revalidate instead of patching a row into a half-truth.
+   *
+   * The pinned 默认助理 card is a SECOND entry over the same assistant, so a save that touched the
+   * default — it IS the pinned one, or this save made it the default — invalidates that key too.
+   * Patching only the table row would leave the card showing the name / avatar / model just
+   * replaced. `editedAgentId` is what identifies an assignment-only submit, which carries no output.
    */
-  const handleSaved = useCallback<NonNullable<AgentEditorModalProps['onSaved']>>(
-    async (output, meta) => {
+  const handleSaved = useCallback(
+    async (
+      output: AdminPlatformAgentSaveOutput | null,
+      meta: AgentEditorSaveMeta,
+      editedAgentId?: string,
+    ) => {
+      const savedId = output?.identity.id ?? editedAgentId;
+      const touchesDefault =
+        Boolean(output?.identity.isDefault) ||
+        (savedId !== undefined && savedId === defaultAgentId);
+      // Only a pure config save describes its row completely enough to patch in place.
+      const listWrite =
+        output && !meta.created && !meta.assignmentsChanged
+          ? () =>
+              updateListItem(output.identity.id, (row) =>
+                applyAgentSaveOutputToListItem(output, row),
+              )
+          : undefined;
       try {
-        if (output && !meta.created && !meta.assignmentsChanged) {
-          await updateListItem(output.identity.id, (row) =>
-            applyAgentSaveOutputToListItem(output, row),
-          );
-        } else {
-          await refreshList();
-        }
+        await (touchesDefault ? refresh.defaultAndList(listWrite) : refresh.listOnly(listWrite));
       } catch {
         // A failed revalidation is reported, never swallowed into a stale row.
         toast.warning(t('agentCatalog.recovery.refreshFailed'));
       }
     },
-    [refreshList, t, updateListItem],
+    [defaultAgentId, refresh, t, updateListItem],
   );
 
   // List rows carry no draftToken or version config; both row actions load the authoritative
   // aggregate first so a stale row can never author a write against an outdated CAS.
-  const openEditor = useCallback(
-    async (item: AdminAgentListItem) => {
+  const openEditorForAgentId = useCallback(
+    async (agentId: string) => {
       try {
-        const detail = await fetchAdminAgentDetail(item.identity.id, adminAgentsService, false);
+        const detail = await fetchAdminAgentDetail(agentId, adminAgentsService, false);
         openAgentEditorModal({
           agent: detail,
           authMethod,
           canAssign: agentPermissions.canAssign,
           canEditConfig,
-          onSaved: handleSaved,
+          // The edited id is carried explicitly: an assignments-only submit returns no output, and
+          // the pinned card still has to be invalidated when THAT assistant is the default.
+          onSaved: (output, meta) => handleSaved(output, meta, agentId),
         });
       } catch (cause) {
         toast.error(getAdminAgentErrorMessage(cause, t));
       }
     },
     [agentPermissions.canAssign, authMethod, canEditConfig, handleSaved, t],
+  );
+
+  const openEditor = useCallback(
+    (item: AdminAgentListItem) => openEditorForAgentId(item.identity.id),
+    [openEditorForAgentId],
   );
 
   const openDelete = useCallback(
@@ -99,9 +126,11 @@ export const useAgentListActions = ({
           expectedDraftToken: detail.draftToken,
           expectedRevision: detail.identity.revision,
           // Drop the committed row from bound infinite pages first so a failed refresh cannot
-          // leave a still-actionable deleted assistant on screen.
+          // leave a still-actionable deleted assistant on screen. The pinned key goes with it:
+          // a delete can only reach the default behind a successor write, and the card must not
+          // keep pointing at an assistant that no longer exists.
           onDeleted: async () => {
-            await removeListItem(detail.identity.id);
+            await refresh.defaultAndList(() => removeListItem(detail.identity.id));
           },
         });
       } catch (cause) {
@@ -109,18 +138,21 @@ export const useAgentListActions = ({
         toast.error(getAdminAgentErrorMessage(cause, t));
       }
     },
-    [authMethod, removeListItem, t],
+    [authMethod, refresh, removeListItem, t],
   );
 
-  /** One revalidation for the whole batch, then the selection is released. */
+  /**
+   * One revalidation for the whole batch, then the selection is released. A batch archive can
+   * retire the outgoing default alongside its successor, so both surfaces are invalidated.
+   */
   const handleBulkDone = useCallback(async () => {
     try {
-      await refreshList();
+      await refresh.defaultAndList();
     } catch {
       toast.warning(t('agentCatalog.recovery.refreshFailed'));
     }
     clearSelection();
-  }, [clearSelection, refreshList, t]);
+  }, [clearSelection, refresh, t]);
 
   /** Opened from the page header: a create has no aggregate to preload. */
   const createAgent = useCallback(
@@ -135,5 +167,12 @@ export const useAgentListActions = ({
     [agentPermissions.canAssign, authMethod, handleSaved],
   );
 
-  return { createAgent, handleBulkDone, handleSaved, openDelete, openEditor };
+  return {
+    createAgent,
+    handleBulkDone,
+    handleSaved,
+    openDelete,
+    openEditor,
+    openEditorForAgentId,
+  };
 };

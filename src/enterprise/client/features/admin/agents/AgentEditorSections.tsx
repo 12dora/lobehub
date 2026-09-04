@@ -35,6 +35,8 @@ export interface AgentEditorIdentityFieldsProps {
   changeAgentKey: (next: string) => void;
   config: PlatformAgentVersionConfig;
   isCreate: boolean;
+  /** The platform's `default-inbox` assistant: its identifier is reserved and never editable. */
+  isDefaultInbox?: boolean;
   keyInvalid: boolean;
   keyMissing: boolean;
   patchConfig: PatchConfig;
@@ -48,6 +50,7 @@ export const AgentEditorIdentityFields = memo<AgentEditorIdentityFieldsProps>(
     changeAgentKey,
     config,
     isCreate,
+    isDefaultInbox = false,
     keyInvalid,
     keyMissing,
     patchConfig,
@@ -110,14 +113,18 @@ export const AgentEditorIdentityFields = memo<AgentEditorIdentityFieldsProps>(
               htmlFor={KEY_ID}
               required={isCreate}
               help={
-                isCreate ? t('agentCatalog.editor.keyDesc') : t('agentCatalog.editor.keyLockedDesc')
+                isDefaultInbox
+                  ? t('agentCatalog.editor.keyDefaultInboxDesc')
+                  : isCreate
+                    ? t('agentCatalog.editor.keyDesc')
+                    : t('agentCatalog.editor.keyLockedDesc')
               }
             >
               {t('agentCatalog.editor.key')}
             </FieldLabel>
             <Input
               aria-label={t('agentCatalog.editor.key')}
-              disabled={readOnly || !isCreate}
+              disabled={readOnly || !isCreate || isDefaultInbox}
               id={KEY_ID}
               maxLength={AGENT_KEY_MAX_LENGTH}
               placeholder={t('agentCatalog.editor.keyPlaceholder')}
