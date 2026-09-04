@@ -7,6 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import Layout from './index';
 
+const mocks = vi.hoisted(() => ({ toggleLeftPanel: vi.fn() }));
+
 vi.mock('@lobehub/ui', () => ({
   Flexbox: ({ children, ...props }: { children?: ReactNode; [key: string]: unknown }) => (
     <div {...props}>{children}</div>
@@ -33,6 +35,24 @@ vi.mock('@/routes/(main)/agent/_layout/AgentIdSync', () => ({
   default: () => <div data-testid="agent-layout-agent-id-sync" />,
 }));
 
+// Portal is "open" for the whole file so the collapse regression below is actually exercised.
+vi.mock('@/store/chat', () => ({
+  useChatStore: (selector: (state: { showPortal: boolean }) => unknown) =>
+    selector({ showPortal: true }),
+}));
+vi.mock('@/store/chat/selectors', () => ({
+  chatPortalSelectors: { showPortal: (state: { showPortal: boolean }) => state.showPortal },
+}));
+vi.mock('@/store/global', () => {
+  const state = { status: { showLeftPanel: true }, toggleLeftPanel: mocks.toggleLeftPanel };
+
+  return {
+    useGlobalStore: Object.assign((selector: (value: typeof state) => unknown) => selector(state), {
+      getState: () => state,
+    }),
+  };
+});
+
 describe('Agent layout', () => {
   it('renders sidebar and outlet', () => {
     render(<Layout />);
@@ -45,5 +65,14 @@ describe('Agent layout', () => {
     render(<Layout />);
 
     expect(screen.getByTestId('agent-layout-agent-id-sync')).toBeInTheDocument();
+  });
+
+  it('never collapses the left nav panel when the chat portal is open', () => {
+    mocks.toggleLeftPanel.mockClear();
+
+    render(<Layout />);
+
+    // Opening an assistant used to auto-collapse the sidebar; the panel is the user's to control.
+    expect(mocks.toggleLeftPanel).not.toHaveBeenCalled();
   });
 });

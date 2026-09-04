@@ -21,7 +21,7 @@ interface AgentSurfaceProps {
  * Mirrors `agent/(chat)/_layout` + `agent/index.tsx` minus `ChatHydration`
  * (which would rewrite the URL to `/agent/:aid/:topicId`) and minus the agent
  * `_layout` chrome that belongs to the agent route (sidebar, hotkeys,
- * `AgentIdSync`, `ProtocolUrlHandler`, `PortalAutoCollapse`).
+ * `AgentIdSync`, `ProtocolUrlHandler`).
  *
  * It does have to take over one sidebar job: the topic fetch. `useFetchChatTopics`
  * normally rides along on the agent sidebar's topic list, which never mounts on

@@ -17,8 +17,6 @@ import { useGlobalStore } from '@/store/global';
  * - on enter: remember the chat rail's state, then apply Fleet's own (`showFleetPanel`)
  * - while active: mirror collapse changes into `showFleetPanel` so they survive reloads
  * - on exit: restore the chat rail's remembered state
- *
- * Mirrors the save/restore approach used by the agent page's PortalAutoCollapse.
  */
 const FleetPanelCollapseSync = memo(() => {
   useEffect(() => {
