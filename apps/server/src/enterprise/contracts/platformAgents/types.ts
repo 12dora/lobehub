@@ -14,6 +14,8 @@ import type {
   adminPlatformAgentListInputSchema,
   adminPlatformAgentListOutputSchema,
   adminPlatformAgentMutationOutputSchema,
+  adminPlatformAgentProvisionDefaultInboxInputSchema,
+  adminPlatformAgentProvisionDefaultInboxOutputSchema,
   adminPlatformAgentRollbackInputSchema,
   adminPlatformAgentRollbackOutputSchema,
   adminPlatformAgentSaveInputSchema,
@@ -103,6 +105,12 @@ export type AdminPlatformAgentListInput = z.input<typeof adminPlatformAgentListI
 export type AdminPlatformAgentListOutput = z.output<typeof adminPlatformAgentListOutputSchema>;
 export type AdminPlatformAgentMutationOutput = z.output<
   typeof adminPlatformAgentMutationOutputSchema
+>;
+export type AdminPlatformAgentProvisionDefaultInboxInput = z.input<
+  typeof adminPlatformAgentProvisionDefaultInboxInputSchema
+>;
+export type AdminPlatformAgentProvisionDefaultInboxOutput = z.output<
+  typeof adminPlatformAgentProvisionDefaultInboxOutputSchema
 >;
 export type AdminPlatformAgentRollbackInput = z.input<typeof adminPlatformAgentRollbackInputSchema>;
 export type AdminPlatformAgentRollbackOutput = z.output<

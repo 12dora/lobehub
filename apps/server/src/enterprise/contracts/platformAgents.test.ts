@@ -15,6 +15,7 @@ import {
   adminPlatformAgentGetInputSchema,
   adminPlatformAgentListInputSchema,
   adminPlatformAgentListOutputSchema,
+  adminPlatformAgentProvisionDefaultInboxInputSchema,
   adminPlatformAgentRollbackInputSchema,
   adminPlatformAgentRolloutCancelInputSchema,
   adminPlatformAgentRolloutListOutputSchema,
@@ -228,6 +229,20 @@ describe('platform Agent contracts', () => {
     expect(platformAgentIdentityDraftSchema.safeParse({ ...draft, systemKey: null }).success).toBe(
       false,
     );
+  });
+
+  it('accepts an omitted or locale-only provisionDefaultInbox payload', () => {
+    expect(adminPlatformAgentProvisionDefaultInboxInputSchema.safeParse(undefined).success).toBe(
+      true,
+    );
+    expect(adminPlatformAgentProvisionDefaultInboxInputSchema.safeParse({}).success).toBe(true);
+    expect(
+      adminPlatformAgentProvisionDefaultInboxInputSchema.safeParse({ locale: 'zh-CN' }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentProvisionDefaultInboxInputSchema.safeParse({ locale: 'zh-CN', extra: 1 })
+        .success,
+    ).toBe(false);
   });
 
   it('uses a fixed global sentinel and same-Agent pinned-version shape', () => {

@@ -105,14 +105,15 @@ describe('admin procedure authorization registry', () => {
     // cancelDocumentRenderJob, runDocumentRenderGc} (Gotenberg document-render settings,
     // status, queue, and artifact GC).
     // +1 query since: admin.system.getSandboxPackageStats (sandbox pip/npm/apt ledger).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(242);
+    // +1 mutation since: admin.agents.provisionDefaultInbox (bootstrap the default inbox).
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(243);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
     ).toHaveLength(109);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(133);
-    expect(mutationPaths).toHaveLength(133);
+    ).toHaveLength(134);
+    expect(mutationPaths).toHaveLength(134);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
@@ -376,5 +377,22 @@ describe('admin procedure authorization registry', () => {
     expect(getAdminMutationRateLimitMetadata(withLimit)).toEqual([
       { enforced: true, kind: 'admin-mutation-rate-limit' },
     ]);
+  });
+
+  it('requires create, publish, and assign for default-inbox provisioning', () => {
+    const entry = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.find(
+      (declaration) => declaration.path === 'admin.agents.provisionDefaultInbox',
+    );
+    expect(entry).toMatchObject({
+      kind: 'mutation',
+      permission: {
+        mode: 'all',
+        permissions: [
+          PLATFORM_PERMISSIONS.AGENT_CREATE,
+          PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+          PLATFORM_PERMISSIONS.AGENT_ASSIGN,
+        ],
+      },
+    });
   });
 });

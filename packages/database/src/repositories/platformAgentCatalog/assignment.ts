@@ -444,6 +444,19 @@ export class PlatformAgentAssignmentRepository extends PlatformAgentIdentityRepo
     };
   };
 
+  /**
+   * Non-locking default-inbox pointer read. Callers that also take the per-Agent reference
+   * lock must peek with this, then lock (2) then (3) — never `FOR UPDATE` the identity first.
+   */
+  getDefaultIdentity = async (): Promise<PlatformAgentItem | undefined> => {
+    const [row] = await this.db
+      .select()
+      .from(platformAgents)
+      .where(eq(platformAgents.isDefault, true))
+      .limit(1);
+    return row;
+  };
+
   getDefaultIdentityForUpdate = async (): Promise<PlatformAgentItem | undefined> => {
     const [row] = await this.db
       .select()

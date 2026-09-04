@@ -25,6 +25,14 @@ import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { acquirePlatformDefaultInboxLock } from '../platformDependencyLock';
+import {
+  buildDefaultInboxSeed,
+  DEFAULT_INBOX_GLOBAL_ASSIGNMENT,
+  isDefaultInboxGlobalAssignment,
+  isDefaultInboxIdentity,
+  isEffectiveDefaultInboxGlobalAssignment,
+  PLATFORM_DEFAULT_INBOX_AGENT_KEY,
+} from './defaultInboxProvision';
 import type { assertExactPlatformAgentDependencies } from './dependencyValidator';
 import {
   PlatformAgentDefaultRequiredError,
@@ -75,7 +83,20 @@ const assignmentView = (assignment: PlatformAgentAssignmentSafeItem) => ({
   versionPolicy: assignment.versionPolicy,
 });
 
+/** The default-inbox global assignment cannot be disabled, retargeted, or removed. */
+const assertDefaultInboxGlobalAssignmentMutable = (
+  identity: PlatformAgentItem,
+  current: Pick<PlatformAgentAssignmentSafeItem, 'enabled' | 'targetId' | 'targetType'>,
+  next?: Pick<PlatformAgentAssignmentSafeItem, 'enabled' | 'targetId' | 'targetType'>,
+) => {
+  if (!isDefaultInboxIdentity(identity) || !isDefaultInboxGlobalAssignment(current)) return;
+  if (!next || !next.enabled || !isDefaultInboxGlobalAssignment(next)) {
+    throw new PlatformAgentDefaultRequiredError();
+  }
+};
+
 export interface PlatformAgentAdminServiceOptions {
+  buildDefaultInboxSeed?: typeof buildDefaultInboxSeed;
   invalidation?: PlatformConfigInvalidationPublisher;
   validateDependencies?: typeof assertExactPlatformAgentDependencies;
 }
@@ -166,6 +187,68 @@ export class PlatformAgentAdminService {
     }
   };
 
+  private findDefaultInboxGlobalAssignment = async (
+    repository: PlatformAgentCatalogRepository,
+    agentId: string,
+  ): Promise<PlatformAgentAssignmentSafeItem | undefined> => {
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await repository.listAssignments({ agentId, cursor, limit: 100 });
+      const found = page.items.find(isDefaultInboxGlobalAssignment);
+      if (found) return found;
+      if (!page.nextCursor) return undefined;
+      cursor = page.nextCursor;
+    }
+  };
+
+  /**
+   * Lock order (ADM-01/ADM-02): (2) per-Agent reference lock, then (3) identity FOR UPDATE.
+   * The caller must already hold (1) the default-inbox singleton lock. Never row-lock the
+   * identity before this — that inverts (2)/(3) and deadlocks with assignment writes.
+   */
+  private ensureDefaultInboxGlobalAssignment = async (
+    tx: Transaction,
+    repository: PlatformAgentCatalogRepository,
+    agentId: string,
+    actorUserId: string,
+  ) => {
+    await acquirePlatformAgentReferenceLock(tx, agentId);
+    const identity = await repository.lockIdentity(agentId);
+    if (!identity) throw new PlatformAgentNotFoundError();
+    const existing = await this.findDefaultInboxGlobalAssignment(repository, identity.id);
+    if (existing && isEffectiveDefaultInboxGlobalAssignment(existing)) {
+      return mutationView(identity);
+    }
+    if (existing) {
+      // Runtime `listEffectiveInputs` requires enabled=true AND status='active'. A
+      // leftover pending / disabled / inactive global row must be repaired, not kept.
+      const updatedAssignment = await repository.updateAssignment(identity.id, existing.id, {
+        enabled: true,
+        mode: existing.mode,
+        pinnedVersionId: existing.pinnedVersionId,
+        status: 'active',
+        targetId: existing.targetId,
+        targetType: existing.targetType,
+        versionPolicy: existing.versionPolicy,
+      });
+      if (!updatedAssignment) throw new PlatformAgentNotFoundError();
+    } else {
+      const created = await repository.createAssignment({
+        agentId: identity.id,
+        ...DEFAULT_INBOX_GLOBAL_ASSIGNMENT,
+      });
+      if (!created) throw new PlatformAgentNotFoundError();
+    }
+    const updated = await repository.updateDraftCas({
+      expectedDraftSequence: identity.draftSequence,
+      expectedRevision: identity.revision,
+      id: identity.id,
+      patch: { updatedBy: actorUserId },
+    });
+    if (!updated) throw new PlatformAgentRevisionConflictError();
+    return mutationView(updated);
+  };
+
   /**
    * De-drafted create: the identity, its first immutable version (`1.0.0`) and the published
    * pointer are written in ONE transaction, so a created Agent is live for its assignees
@@ -180,12 +263,17 @@ export class PlatformAgentAdminService {
         reason: input.reason,
         run: async (tx) => {
           // Enter the shared default-inbox singleton lock (same lock as bootstrap /
-          // setDefaultInbox / archive) before any validation or write, so create participates
-          // in the one serialization point for the default pointer (ADM-01). The default-inbox
-          // singleton is owned exclusively by `setDefaultInbox`; creation can never seed it, so
-          // a freshly created Agent is never the default one.
+          // provisionDefaultInbox / setDefaultInbox / archive) before any validation or write.
+          // Generic create can never seed the default-inbox identity.
           await acquirePlatformDefaultInboxLock(tx);
-          if (input.isDefault || input.systemKey !== null) {
+          // Reserved catalog key for the provisioned inbox. Generic create must not consume
+          // it — that would make later provisioning a unique-key failure instead of an
+          // idempotent repair. Platform agents have no separate slug field.
+          if (
+            input.agentKey === PLATFORM_DEFAULT_INBOX_AGENT_KEY ||
+            input.isDefault ||
+            input.systemKey !== null
+          ) {
             throw new PlatformAgentInvalidInputError();
           }
           const created = await new PlatformAgentCatalogRepository(tx).createIdentity({
@@ -234,6 +322,89 @@ export class PlatformAgentAdminService {
     const identity = await new PlatformAgentCatalogRepository(this.db).getIdentity(id);
     if (!identity || identity.migrationRequired) throw new PlatformAgentNotFoundError();
     return mutationView(identity);
+  };
+
+  /**
+   * Idempotent admin bootstrap of the default-inbox identity. Never runs at startup — once the
+   * row exists, runtime overlays it onto every user's builtin inbox.
+   */
+  provisionDefaultInbox = async (params: { actorId: string; locale?: string }) => {
+    const startedAt = Date.now();
+    try {
+      const result = await this.atomicMutation({
+        action: 'admin.agents.provisionDefaultInbox',
+        actorUserId: params.actorId,
+        run: async (tx) => {
+          const repository = new PlatformAgentCatalogRepository(tx);
+          await acquirePlatformDefaultInboxLock(tx);
+          // Peek without FOR UPDATE so the repair path can take reference lock (2) before
+          // identity (3). The singleton lock already serializes default-pointer writers.
+          const existingDefault = await repository.getDefaultIdentity();
+          const reserved = await repository.getIdentityByAgentKey(PLATFORM_DEFAULT_INBOX_AGENT_KEY);
+          if (reserved && !isDefaultInboxIdentity(reserved)) {
+            throw new PlatformAgentDefaultRequiredError(
+              `Reserved agentKey '${PLATFORM_DEFAULT_INBOX_AGENT_KEY}' is already held by a non-default identity`,
+            );
+          }
+          const existing =
+            existingDefault ??
+            (reserved && isDefaultInboxIdentity(reserved) ? reserved : undefined);
+          if (existing) {
+            const identity = await this.ensureDefaultInboxGlobalAssignment(
+              tx,
+              repository,
+              existing.id,
+              params.actorId,
+            );
+            return { created: false as const, identity };
+          }
+
+          const seed = await (this.options.buildDefaultInboxSeed ?? buildDefaultInboxSeed)(tx, {
+            locale: params.locale,
+          });
+          const created = await repository.createIdentity({
+            agentKey: PLATFORM_DEFAULT_INBOX_AGENT_KEY,
+            createdBy: params.actorId,
+            isDefault: true,
+            systemKey: PLATFORM_DEFAULT_INBOX_AGENT_KEY,
+          });
+          const { identity: published } = await appendAndPublishPlatformAgentVersion(tx, {
+            actorUserId: params.actorId,
+            config: seed.config,
+            dependencySnapshot: seed.dependencySnapshot,
+            identity: created,
+            validateDependencies: this.options.validateDependencies,
+            version: FIRST_PLATFORM_AGENT_VERSION,
+          });
+          const identity = await this.ensureDefaultInboxGlobalAssignment(
+            tx,
+            repository,
+            published.id,
+            params.actorId,
+          );
+          return { created: true as const, identity };
+        },
+        summarize: ({ created, identity }) => ({
+          agentKey: identity.identity.agentKey,
+          created,
+          locale: params.locale ?? null,
+          revision: identity.identity.revision,
+        }),
+        targetId: PLATFORM_DEFAULT_INBOX_AGENT_KEY,
+      });
+      if (result.created) {
+        await invalidatePlatformAgentPublication({
+          agentId: result.identity.identity.id,
+          invalidation: this.options.invalidation,
+          revision: result.identity.identity.revision,
+        });
+        observePlatformAgentPublication({ operation: 'save', startedAt });
+      }
+      return result.identity;
+    } catch (error) {
+      observePlatformAgentPublication({ error, operation: 'save', startedAt });
+      throw error;
+    }
   };
 
   list = async (input: AdminPlatformAgentListInput) => {
@@ -331,6 +502,13 @@ export class PlatformAgentAdminService {
           targetType: input.targetType,
           versionPolicy: input.versionPolicy,
         };
+        if (input.assignmentId) {
+          const current = await repository.getAssignment(locked.id, input.assignmentId);
+          if (!current) throw new PlatformAgentNotFoundError();
+          assertDefaultInboxGlobalAssignmentMutable(locked, current, values);
+        } else {
+          assertDefaultInboxGlobalAssignmentMutable(locked, values, values);
+        }
         const assignment = input.assignmentId
           ? await repository.updateAssignment(locked.id, input.assignmentId, values)
           : await repository.createAssignment({ agentId: locked.id, ...values });
@@ -364,6 +542,9 @@ export class PlatformAgentAdminService {
           input.expectedDraftToken,
           input.expectedRevision,
         );
+        const current = await repository.getAssignment(locked.id, input.assignmentId);
+        if (!current) throw new PlatformAgentNotFoundError();
+        assertDefaultInboxGlobalAssignmentMutable(locked, current);
         const removed = await repository.deleteAssignment(locked.id, input.assignmentId);
         if (!removed) throw new PlatformAgentNotFoundError();
         const updated = await repository.updateDraftCas({
@@ -474,6 +655,11 @@ export class PlatformAgentAdminService {
           input.expectedDraftToken,
           input.expectedRevision,
         );
+        // Refuse the default pointer before counting references: a provisioned default always
+        // has a locked global assignment, so resource-in-use would otherwise mask this error.
+        if (current.isDefault && !input.replacementAgentId) {
+          throw new PlatformAgentDefaultRequiredError();
+        }
         // This phase performs no atomic reference migration: any live Assignment /
         // Materialization must be reassigned first, so archive is a stable resource-in-use
         // rejection rather than a half-done cascade (ADM-02). TOCTOU is closed by the shared
@@ -484,9 +670,6 @@ export class PlatformAgentAdminService {
         const references = await repository.countAgentReferences(current.id);
         if (references.assignments > 0 || references.materializations > 0) {
           throw new PlatformAgentResourceInUseError();
-        }
-        if (current.isDefault && !input.replacementAgentId) {
-          throw new PlatformAgentDefaultRequiredError();
         }
         const archived = await repository.archiveIdentityCas({
           expectedDraftSequence: current.draftSequence,

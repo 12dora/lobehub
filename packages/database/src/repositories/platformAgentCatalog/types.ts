@@ -95,6 +95,8 @@ export interface PlatformAgentAssignmentWrite {
   enabled: boolean;
   mode: PlatformAgentAssignmentMode;
   pinnedVersionId: string | null;
+  /** When set, persisted on update. Create always writes `active`. */
+  status?: PlatformAgentAssignmentSafeItem['status'];
   targetId: string;
   targetType: PlatformAgentAssignmentTargetType;
   versionPolicy: PlatformAgentVersionPolicy;

@@ -21,6 +21,7 @@ export const AUDIT_ACTIONS = [
   'admin.agents.create',
   'admin.agents.createVersion',
   'admin.agents.delete',
+  'admin.agents.provisionDefaultInbox',
   'admin.agents.publish',
   'admin.agents.rollback',
   'admin.agents.rollouts.cancel',

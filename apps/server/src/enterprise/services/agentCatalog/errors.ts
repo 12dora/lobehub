@@ -17,8 +17,8 @@ export class PlatformAgentRevisionConflictError extends Error {
 export class PlatformAgentDefaultRequiredError extends Error {
   readonly code = 'PLATFORM_DEFAULT_AGENT_REQUIRED';
 
-  constructor() {
-    super('PLATFORM_DEFAULT_AGENT_REQUIRED');
+  constructor(message = 'PLATFORM_DEFAULT_AGENT_REQUIRED') {
+    super(message);
   }
 }
 
@@ -31,8 +31,8 @@ export class PlatformAgentDefaultRequiredError extends Error {
 export class PlatformAgentInvalidInputError extends Error {
   readonly code = 'PLATFORM_INVALID_INPUT';
 
-  constructor() {
-    super('PLATFORM_INVALID_INPUT');
+  constructor(message = 'PLATFORM_INVALID_INPUT') {
+    super(message);
   }
 }
 

@@ -12,6 +12,7 @@ import * as schema from '@/database/schemas';
 import {
   platformAgentAssignments,
   platformAgents,
+  platformAgentVersions,
   platformAuditLogs,
   roles,
   userRoles,
@@ -21,7 +22,12 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 
 import { PlatformAgentAdminService } from './adminService';
-import { createAdminPgFixture, enabled } from './adminService.pg.fixture';
+import {
+  config,
+  createAdminPgFixture,
+  dependencySnapshot,
+  enabled,
+} from './adminService.pg.fixture';
 import {
   PlatformAgentDefaultRequiredError,
   PlatformAgentResourceInUseError,
@@ -169,6 +175,54 @@ run('PlatformAgentAdminService (PostgreSQL) — list / archive / queries', () =>
           .from(platformAgents)
           .where(eq(platformAgents.isDefault, true));
         expect(defaults.count).toBe(1);
+      } finally {
+        await Promise.all([firstPool.end(), secondPool.end()]);
+      }
+    }, 20_000);
+  });
+
+  describe('default-inbox first-time provision concurrency', () => {
+    it('creates exactly one identity, version, and global assignment under two connections', async () => {
+      const seed = { config: config('Inbox'), dependencySnapshot };
+      const firstPool = new Pool({ connectionString, max: 1 });
+      const secondPool = new Pool({ connectionString, max: 1 });
+      const firstDb = drizzle(firstPool, { schema }) as unknown as LobeChatDatabase;
+      const secondDb = drizzle(secondPool, { schema }) as unknown as LobeChatDatabase;
+      try {
+        const provision = (target: LobeChatDatabase) =>
+          new PlatformAgentAdminService(target, {
+            buildDefaultInboxSeed: async () => seed,
+            validateDependencies: async () => {
+              /* Seed is already schema-valid; skip live AI-catalog lookup in this race. */
+            },
+          }).provisionDefaultInbox({ actorId: 'admin' });
+
+        const results = await Promise.allSettled([provision(firstDb), provision(secondDb)]);
+        for (const result of results) {
+          if (result.status === 'rejected') throw result.reason;
+        }
+        expect(results).toHaveLength(2);
+
+        const identities = await db
+          .select()
+          .from(platformAgents)
+          .where(eq(platformAgents.agentKey, 'default-inbox'));
+        expect(identities).toHaveLength(1);
+        const versions = await db
+          .select()
+          .from(platformAgentVersions)
+          .where(eq(platformAgentVersions.agentId, identities[0]!.id));
+        expect(versions).toHaveLength(1);
+        const assignments = await db
+          .select()
+          .from(platformAgentAssignments)
+          .where(eq(platformAgentAssignments.agentId, identities[0]!.id));
+        expect(assignments).toHaveLength(1);
+        expect(assignments[0]).toMatchObject({
+          enabled: true,
+          status: 'active',
+          targetType: 'global',
+        });
       } finally {
         await Promise.all([firstPool.end(), secondPool.end()]);
       }

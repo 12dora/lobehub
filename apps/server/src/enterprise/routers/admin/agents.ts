@@ -14,6 +14,8 @@ import {
   adminPlatformAgentGetOutputSchema,
   adminPlatformAgentListInputSchema,
   adminPlatformAgentListOutputSchema,
+  adminPlatformAgentProvisionDefaultInboxInputSchema,
+  adminPlatformAgentProvisionDefaultInboxOutputSchema,
   adminPlatformAgentRollbackInputSchema,
   adminPlatformAgentRollbackOutputSchema,
   adminPlatformAgentSaveInputSchema,
@@ -158,6 +160,36 @@ export const adminAgentsRouter = router({
       assertAgentFeatureEnabled();
       try {
         return await new PlatformAgentAdminService(ctx.serverDB).listVersions(input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  provisionDefaultInbox: adminBase
+    .use(
+      withAllPlatformPermissions([
+        PLATFORM_PERMISSIONS.AGENT_CREATE,
+        PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+        PLATFORM_PERMISSIONS.AGENT_ASSIGN,
+      ]),
+    )
+    .input(adminPlatformAgentProvisionDefaultInboxInputSchema)
+    .output(adminPlatformAgentProvisionDefaultInboxOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      await assertAgentDangerousReauth({
+        action: 'admin.agents.provisionDefaultInbox',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        serverDB: ctx.serverDB,
+        targetId: 'default-inbox',
+      });
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).provisionDefaultInbox({
+          actorId: ctx.userId!,
+          locale: input?.locale,
+        });
       } catch (error) {
         return mapAgentServiceError(error);
       }

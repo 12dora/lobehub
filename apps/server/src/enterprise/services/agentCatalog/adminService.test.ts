@@ -28,10 +28,14 @@ const mocks = vi.hoisted(() => ({
   countAssignmentsByAgentIds: vi.fn(),
   createAssignment: vi.fn(),
   createIdentity: vi.fn(),
+  deleteAssignment: vi.fn(),
+  getDefaultIdentity: vi.fn(),
   getDefaultIdentityForUpdate: vi.fn(),
   getExactVersion: vi.fn(),
   getExactVersionsByIds: vi.fn(),
   getIdentity: vi.fn(),
+  getIdentityByAgentKey: vi.fn(),
+  getAssignment: vi.fn(),
   hardDeleteAgentCascade: vi.fn(),
   listAssignments: vi.fn(),
   listDependentMaterializations: vi.fn(),
@@ -54,10 +58,14 @@ vi.mock('@/database/repositories/platformAgentCatalog', () => ({
     countAssignmentsByAgentIds = mocks.countAssignmentsByAgentIds;
     createAssignment = mocks.createAssignment;
     createIdentity = mocks.createIdentity;
+    deleteAssignment = mocks.deleteAssignment;
+    getAssignment = mocks.getAssignment;
+    getDefaultIdentity = mocks.getDefaultIdentity;
     getDefaultIdentityForUpdate = mocks.getDefaultIdentityForUpdate;
     getExactVersion = mocks.getExactVersion;
     getExactVersionsByIds = mocks.getExactVersionsByIds;
     getIdentity = mocks.getIdentity;
+    getIdentityByAgentKey = mocks.getIdentityByAgentKey;
     hardDeleteAgentCascade = mocks.hardDeleteAgentCascade;
     listAssignments = mocks.listAssignments;
     listDependentMaterializations = mocks.listDependentMaterializations;
@@ -260,7 +268,7 @@ describe('PlatformAgentAdminService', () => {
   it('requires a published replacement before archiving the current default', async () => {
     const current = identity({ id: 'default-agent', isDefault: true, systemKey: 'default-inbox' });
     mocks.lockIdentity.mockResolvedValue(current);
-    mocks.countAgentReferences.mockResolvedValue({ assignments: 0, materializations: 0 });
+    mocks.countAgentReferences.mockResolvedValue({ assignments: 1, materializations: 0 });
     await expect(
       new PlatformAgentAdminService(db).archive('admin-id', {
         ...pointer(current),
@@ -268,6 +276,7 @@ describe('PlatformAgentAdminService', () => {
         replacementAgentId: null,
       }),
     ).rejects.toBeInstanceOf(PlatformAgentDefaultRequiredError);
+    expect(mocks.countAgentReferences).not.toHaveBeenCalled();
     expect(mocks.archiveIdentityCas).not.toHaveBeenCalled();
     expect(mocks.appendAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'admin.agents.archive', result: 'failure' }),
@@ -360,6 +369,20 @@ describe('PlatformAgentAdminService', () => {
           isDefault: true,
           reason: 'sneak a default',
           systemKey: 'default-inbox',
+        }),
+      ).rejects.toBeInstanceOf(PlatformAgentInvalidInputError);
+      expect(mocks.createIdentity).not.toHaveBeenCalled();
+    });
+
+    it('rejects create that consumes the reserved default-inbox agentKey', async () => {
+      await expect(
+        new PlatformAgentAdminService(db).create('admin-id', {
+          agentKey: 'default-inbox',
+          config: createConfig,
+          dependencySnapshot: createDependencySnapshot,
+          isDefault: false,
+          reason: 'take the reserved key',
+          systemKey: null,
         }),
       ).rejects.toBeInstanceOf(PlatformAgentInvalidInputError);
       expect(mocks.createIdentity).not.toHaveBeenCalled();
@@ -678,6 +701,21 @@ describe('PlatformAgentAdminService', () => {
       expect(mocks.acquireDefaultLock).toHaveBeenCalled();
       expect(mocks.acquireReferenceLock).toHaveBeenCalledWith(expect.anything(), locked.id);
     });
+
+    it('refuses to delete the default inbox identity', async () => {
+      const locked = identity({ isDefault: true, systemKey: 'default-inbox' });
+      mocks.lockIdentity.mockResolvedValue(locked);
+
+      await expect(
+        new PlatformAgentAdminService(db).delete('admin-id', {
+          agentId: locked.id,
+          expectedDraftToken: platformAgentDraftToken(locked),
+          expectedRevision: locked.revision,
+          reason: 'delete default inbox',
+        }),
+      ).rejects.toBeInstanceOf(PlatformAgentDefaultRequiredError);
+      expect(mocks.hardDeleteAgentCascade).not.toHaveBeenCalled();
+    });
   });
 
   it('returns ASSIGNMENT_DISABLED warning code for disabled assignment preview', async () => {
@@ -744,5 +782,313 @@ describe('PlatformAgentAdminService', () => {
       estimatedUsers: 3,
       warnings: ['ASSIGNMENT_DISABLED', 'MANDATORY_AGENT_CANNOT_BE_HIDDEN'],
     });
+  });
+
+  describe('provisionDefaultInbox', () => {
+    const seed = {
+      config: createConfig,
+      dependencySnapshot: createDependencySnapshot,
+    };
+
+    it('creates a published default-inbox identity, global assignment, and audit row', async () => {
+      const created = identity({
+        agentKey: 'default-inbox',
+        currentVersionId: null,
+        draftSequence: 0,
+        id: 'inbox-agent',
+        isDefault: true,
+        revision: 0,
+        status: 'draft',
+        systemKey: 'default-inbox',
+      });
+      const published = {
+        ...created,
+        currentVersionId: 'version-id',
+        draftSequence: 2,
+        revision: 1,
+        status: 'published',
+      };
+      mocks.getDefaultIdentity.mockResolvedValue(undefined);
+      mocks.getIdentityByAgentKey.mockResolvedValue(undefined);
+      mocks.createIdentity.mockResolvedValue(created);
+      mocks.appendVersionCas.mockResolvedValue({
+        agentId: created.id,
+        checksum: 'f'.repeat(64),
+        config: createConfig,
+        createdAt: new Date('2026-09-04T00:00:00Z'),
+        createdBy: 'admin-id',
+        dependencySnapshot: createDependencySnapshot,
+        id: 'version-id',
+        version: '1.0.0',
+      });
+      mocks.pointToVersionCas.mockResolvedValue(published);
+      mocks.lockIdentity.mockResolvedValue(published);
+      mocks.listAssignments.mockResolvedValue({ items: [], nextCursor: null });
+      mocks.createAssignment.mockResolvedValue({
+        agentId: published.id,
+        enabled: true,
+        id: 'global-assignment',
+        mode: 'default',
+        pinnedVersionId: null,
+        status: 'active',
+        targetId: '__global__',
+        targetType: 'global',
+        versionPolicy: 'latest_published',
+      });
+      mocks.updateDraftCas.mockResolvedValue({ ...published, draftSequence: 3 });
+
+      const buildSeed = vi.fn(async () => seed);
+      const result = await new PlatformAgentAdminService(db, {
+        buildDefaultInboxSeed: buildSeed,
+        invalidation: { publish: vi.fn() },
+      }).provisionDefaultInbox({ actorId: 'admin-id', locale: 'zh-CN' });
+
+      expect(result.identity).toMatchObject({
+        agentKey: 'default-inbox',
+        isDefault: true,
+        status: 'published',
+        systemKey: 'default-inbox',
+      });
+      expect(mocks.acquireDefaultLock).toHaveBeenCalledBefore(mocks.createIdentity);
+      expect(mocks.acquireReferenceLock).toHaveBeenCalledBefore(mocks.lockIdentity);
+      expect(mocks.createIdentity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentKey: 'default-inbox',
+          isDefault: true,
+          systemKey: 'default-inbox',
+        }),
+      );
+      expect(mocks.createAssignment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          enabled: true,
+          mode: 'default',
+          targetId: '__global__',
+          targetType: 'global',
+        }),
+      );
+      expect(buildSeed).toHaveBeenCalledWith(expect.anything(), { locale: 'zh-CN' });
+      expect(mocks.appendAudit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'admin.agents.provisionDefaultInbox',
+          afterDiff: expect.objectContaining({ created: true, locale: 'zh-CN' }),
+          result: 'success',
+        }),
+      );
+    });
+
+    it('is idempotent when the default inbox already has an effective global assignment', async () => {
+      const existing = identity({
+        agentKey: 'default-inbox',
+        id: 'inbox-agent',
+        isDefault: true,
+        systemKey: 'default-inbox',
+      });
+      mocks.getDefaultIdentity.mockResolvedValue(existing);
+      mocks.lockIdentity.mockResolvedValue(existing);
+      mocks.listAssignments.mockResolvedValue({
+        items: [
+          {
+            agentId: existing.id,
+            enabled: true,
+            id: 'global-assignment',
+            mode: 'default',
+            pinnedVersionId: null,
+            status: 'active',
+            targetId: '__global__',
+            targetType: 'global',
+            versionPolicy: 'latest_published',
+          },
+        ],
+        nextCursor: null,
+      });
+
+      const result = await new PlatformAgentAdminService(db, {
+        buildDefaultInboxSeed: async () => seed,
+      }).provisionDefaultInbox({ actorId: 'admin-id' });
+
+      expect(result.identity.id).toBe(existing.id);
+      expect(mocks.createIdentity).not.toHaveBeenCalled();
+      expect(mocks.createAssignment).not.toHaveBeenCalled();
+      expect(mocks.updateAssignment).not.toHaveBeenCalled();
+      expect(mocks.acquireDefaultLock).toHaveBeenCalledBefore(mocks.acquireReferenceLock);
+      expect(mocks.acquireReferenceLock).toHaveBeenCalledBefore(mocks.lockIdentity);
+      expect(mocks.appendAudit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'admin.agents.provisionDefaultInbox',
+          afterDiff: expect.objectContaining({ created: false }),
+          result: 'success',
+        }),
+      );
+    });
+
+    it('re-enables a disabled global assignment on the existing default inbox', async () => {
+      const existing = identity({
+        agentKey: 'default-inbox',
+        id: 'inbox-agent',
+        isDefault: true,
+        systemKey: 'default-inbox',
+      });
+      mocks.getDefaultIdentity.mockResolvedValue(existing);
+      mocks.lockIdentity.mockResolvedValue(existing);
+      mocks.listAssignments.mockResolvedValue({
+        items: [
+          {
+            agentId: existing.id,
+            enabled: false,
+            id: 'global-assignment',
+            mode: 'default',
+            pinnedVersionId: null,
+            status: 'active',
+            targetId: '__global__',
+            targetType: 'global',
+            versionPolicy: 'latest_published',
+          },
+        ],
+        nextCursor: null,
+      });
+      mocks.updateAssignment.mockResolvedValue({
+        agentId: existing.id,
+        enabled: true,
+        id: 'global-assignment',
+        mode: 'default',
+        pinnedVersionId: null,
+        status: 'active',
+        targetId: '__global__',
+        targetType: 'global',
+        versionPolicy: 'latest_published',
+      });
+      mocks.updateDraftCas.mockResolvedValue({ ...existing, draftSequence: 5 });
+
+      await new PlatformAgentAdminService(db).provisionDefaultInbox({ actorId: 'admin-id' });
+      expect(mocks.updateAssignment).toHaveBeenCalledWith(
+        existing.id,
+        'global-assignment',
+        expect.objectContaining({ enabled: true, status: 'active' }),
+      );
+      expect(mocks.createIdentity).not.toHaveBeenCalled();
+    });
+
+    it('activates a pending global assignment so runtime resolution can pick it up', async () => {
+      const existing = identity({
+        agentKey: 'default-inbox',
+        id: 'inbox-agent',
+        isDefault: true,
+        systemKey: 'default-inbox',
+      });
+      mocks.getDefaultIdentity.mockResolvedValue(existing);
+      mocks.lockIdentity.mockResolvedValue(existing);
+      mocks.listAssignments.mockResolvedValue({
+        items: [
+          {
+            agentId: existing.id,
+            enabled: true,
+            id: 'global-assignment',
+            mode: 'default',
+            pinnedVersionId: null,
+            status: 'pending',
+            targetId: '__global__',
+            targetType: 'global',
+            versionPolicy: 'latest_published',
+          },
+        ],
+        nextCursor: null,
+      });
+      mocks.updateAssignment.mockResolvedValue({
+        agentId: existing.id,
+        enabled: true,
+        id: 'global-assignment',
+        mode: 'default',
+        pinnedVersionId: null,
+        status: 'active',
+        targetId: '__global__',
+        targetType: 'global',
+        versionPolicy: 'latest_published',
+      });
+      mocks.updateDraftCas.mockResolvedValue({ ...existing, draftSequence: 5 });
+
+      await new PlatformAgentAdminService(db).provisionDefaultInbox({ actorId: 'admin-id' });
+      expect(mocks.updateAssignment).toHaveBeenCalledWith(
+        existing.id,
+        'global-assignment',
+        expect.objectContaining({ enabled: true, status: 'active' }),
+      );
+      expect(mocks.createIdentity).not.toHaveBeenCalled();
+    });
+
+    it('refuses to silently adopt a non-default identity that already holds the reserved key', async () => {
+      const occupant = identity({
+        agentKey: 'default-inbox',
+        id: 'occupant-agent',
+        isDefault: false,
+        systemKey: null,
+      });
+      mocks.getDefaultIdentity.mockResolvedValue(undefined);
+      mocks.getIdentityByAgentKey.mockResolvedValue(occupant);
+
+      await expect(
+        new PlatformAgentAdminService(db).provisionDefaultInbox({ actorId: 'admin-id' }),
+      ).rejects.toBeInstanceOf(PlatformAgentDefaultRequiredError);
+      await expect(
+        new PlatformAgentAdminService(db).provisionDefaultInbox({ actorId: 'admin-id' }),
+      ).rejects.toMatchObject({
+        message: expect.stringMatching(/default-inbox.*non-default identity/),
+      });
+      expect(mocks.createIdentity).not.toHaveBeenCalled();
+      expect(mocks.createAssignment).not.toHaveBeenCalled();
+    });
+  });
+
+  it('refuses to disable the default inbox global assignment', async () => {
+    const locked = identity({ isDefault: true, systemKey: 'default-inbox' });
+    mocks.lockIdentity.mockResolvedValue(locked);
+    mocks.getAssignment.mockResolvedValue({
+      agentId: locked.id,
+      enabled: true,
+      id: 'global-assignment',
+      mode: 'default',
+      pinnedVersionId: null,
+      targetId: '__global__',
+      targetType: 'global',
+      versionPolicy: 'latest_published',
+    });
+
+    await expect(
+      new PlatformAgentAdminService(db).upsertAssignment('admin-id', {
+        ...pointer(locked),
+        assignmentId: 'global-assignment',
+        enabled: false,
+        mode: 'default',
+        pinnedVersionId: null,
+        reason: 'disable default inbox',
+        targetId: '__global__',
+        targetType: 'global',
+        versionPolicy: 'latest_published',
+      }),
+    ).rejects.toBeInstanceOf(PlatformAgentDefaultRequiredError);
+    expect(mocks.updateAssignment).not.toHaveBeenCalled();
+  });
+
+  it('refuses to remove the default inbox global assignment', async () => {
+    const locked = identity({ isDefault: true, systemKey: 'default-inbox' });
+    mocks.lockIdentity.mockResolvedValue(locked);
+    mocks.getAssignment.mockResolvedValue({
+      agentId: locked.id,
+      enabled: true,
+      id: 'global-assignment',
+      mode: 'default',
+      pinnedVersionId: null,
+      targetId: '__global__',
+      targetType: 'global',
+      versionPolicy: 'latest_published',
+    });
+
+    await expect(
+      new PlatformAgentAdminService(db).removeAssignment('admin-id', {
+        ...pointer(locked),
+        assignmentId: 'global-assignment',
+        reason: 'remove default inbox',
+      }),
+    ).rejects.toBeInstanceOf(PlatformAgentDefaultRequiredError);
+    expect(mocks.deleteAssignment).not.toHaveBeenCalled();
   });
 });

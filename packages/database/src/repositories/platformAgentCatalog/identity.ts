@@ -55,6 +55,15 @@ export class PlatformAgentIdentityRepository {
     return row;
   };
 
+  getIdentityByAgentKey = async (agentKey: string): Promise<PlatformAgentItem | undefined> => {
+    const [row] = await this.db
+      .select()
+      .from(platformAgents)
+      .where(eq(platformAgents.agentKey, agentKey))
+      .limit(1);
+    return row;
+  };
+
   listIdentities = async (params: {
     cursor?: string;
     isDefault?: boolean;

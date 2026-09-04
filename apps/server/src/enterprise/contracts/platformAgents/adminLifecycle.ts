@@ -196,6 +196,21 @@ export const adminPlatformAgentSetDefaultInboxOutputSchema = z
   })
   .strict();
 
+/**
+ * Idempotent bootstrap of the default-inbox identity + published version + global assignment.
+ * Optional `locale` lets the admin console pass the operator UI language for the builtin inbox
+ * title fallback; omitted / unknown tags use the built-in inbox title.
+ */
+export const adminPlatformAgentProvisionDefaultInboxInputSchema = z
+  .object({
+    locale: z.string().optional(),
+  })
+  .strict()
+  .optional();
+
+export const adminPlatformAgentProvisionDefaultInboxOutputSchema =
+  adminPlatformAgentGetOutputSchema;
+
 export const adminPlatformAgentVersionsListInputSchema = z
   .object({
     agentId: idSchema,

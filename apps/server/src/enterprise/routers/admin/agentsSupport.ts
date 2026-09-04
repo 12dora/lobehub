@@ -53,6 +53,7 @@ export const mapAgentServiceError = (error: unknown): never => {
     return throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_DEFAULT_AGENT_REQUIRED,
       httpCode: 'PRECONDITION_FAILED',
+      message: error.message,
     });
   }
   if (error instanceof PlatformAgentResourceInUseError) {
@@ -67,6 +68,7 @@ export const mapAgentServiceError = (error: unknown): never => {
     return throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
       httpCode: 'BAD_REQUEST',
+      message: error.message,
     });
   }
   // Already-redacted unknown read failure (REWORK-5). Surface a stable, detail-free 500 rather

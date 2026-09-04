@@ -1,9 +1,11 @@
 // @vitest-environment node
+import { DEFAULT_AGENT_CONFIG, INBOX_SESSION_ID } from '@lobechat/const';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { getTestDB } from '@/database/core/getTestDB';
+import { createUnmanagedResourcePolicyMap } from '@/database/models/platform';
 import { checksumPayload } from '@/database/models/platform/checksum';
 import {
   permissions,
@@ -25,7 +27,7 @@ import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
 import { ADMIN_REAUTH_MAX_AGE_MS } from '../../contracts/adminUsers';
-import { platformAgentDraftToken } from '../../services/agentCatalog';
+import { platformAgentDraftToken, PlatformDefaultInboxService } from '../../services/agentCatalog';
 import { adminRouter } from '../admin';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -43,6 +45,8 @@ const ids = {
   /** AGENT_UPDATE + AGENT_PUBLISH — the save gate. */
   editor: 'm10-router-editor',
   normal: 'm10-router-normal',
+  /** AGENT_CREATE + AGENT_PUBLISH + AGENT_ASSIGN — provisionDefaultInbox compound gate. */
+  provisioner: 'm10-router-provisioner',
   publisher: 'm10-router-publisher',
   reader: 'm10-router-reader',
   updater: 'm10-router-updater',
@@ -160,6 +164,7 @@ beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
   vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+  vi.stubEnv('DEFAULT_AGENT_CONFIG', 'model=chat;provider=provider');
   databaseMocks.getServerDB.mockReset().mockResolvedValue(db);
   await cleanup();
   await db.insert(users).values(Object.values(ids).map((id) => ({ id })));
@@ -182,6 +187,11 @@ beforeEach(async () => {
   ]);
   await grantPermissions(ids.deleter, 'm10_agent_deleter', [PLATFORM_PERMISSIONS.AGENT_DELETE]);
   await grantPermissions(ids.assigner, 'm10_agent_assigner', [PLATFORM_PERMISSIONS.AGENT_ASSIGN]);
+  await grantPermissions(ids.provisioner, 'm10_agent_provisioner', [
+    PLATFORM_PERMISSIONS.AGENT_CREATE,
+    PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+    PLATFORM_PERMISSIONS.AGENT_ASSIGN,
+  ]);
   await seedPublishedProvider();
 });
 
@@ -712,5 +722,149 @@ describe('adminAgentsRouter hard delete', () => {
       }),
     ).rejects.toThrow();
     expect(await agentRows('default-inbox-agent')).toHaveLength(1);
+  });
+});
+
+describe('adminAgentsRouter provisionDefaultInbox', () => {
+  const managedPolicy = () => {
+    const published = createUnmanagedResourcePolicyMap();
+    published.agents = { enforcementMode: 'enforced', managed: true };
+    return {
+      draft: createUnmanagedResourcePolicyMap(),
+      published,
+      revision: 1,
+      status: 'published' as const,
+    };
+  };
+
+  it('rejects anonymous, ordinary, half-granted and stale-reauth callers', async () => {
+    await expect((await callerFor({})).provisionDefaultInbox()).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+    });
+    await expect(
+      (
+        await callerFor({ authenticatedAt: new Date(), userId: ids.normal })
+      ).provisionDefaultInbox(),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(
+      (
+        await callerFor({ authenticatedAt: new Date(), userId: ids.publisher })
+      ).provisionDefaultInbox(),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(
+      (
+        await callerFor({ authenticatedAt: new Date(), userId: ids.creator })
+      ).provisionDefaultInbox(),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(
+      (
+        await callerFor({ authenticatedAt: new Date(), userId: ids.assigner })
+      ).provisionDefaultInbox(),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(
+      (await callerFor({ authenticatedAt: null, userId: ids.provisioner })).provisionDefaultInbox(),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
+
+  it('provisions idempotently and overlays the version onto an ordinary user inbox', async () => {
+    const provisioner = await callerFor({ authenticatedAt: new Date(), userId: ids.provisioner });
+    const first = await provisioner.provisionDefaultInbox({ locale: 'zh-CN' });
+    expect(first.identity).toMatchObject({
+      agentKey: 'default-inbox',
+      isDefault: true,
+      status: 'published',
+      systemKey: 'default-inbox',
+    });
+    const second = await provisioner.provisionDefaultInbox();
+    expect(second.identity.id).toBe(first.identity.id);
+
+    const listed = await (
+      await callerFor({ authenticatedAt: new Date(), userId: ids.reader })
+    ).list({ isDefault: true, limit: 10 });
+    expect(listed.items).toHaveLength(1);
+    expect(listed.items[0]?.identity.id).toBe(first.identity.id);
+
+    const [version] = await db
+      .select()
+      .from(platformAgentVersions)
+      .where(eq(platformAgentVersions.agentId, first.identity.id));
+    const overlay = await new PlatformDefaultInboxService(db, ids.normal, {
+      materializationService: {
+        resolveForExistingAgent: async (snapshot, agentId) => ({
+          agentId,
+          config: {
+            ...DEFAULT_AGENT_CONFIG,
+            id: agentId,
+            model: version!.dependencySnapshot!.model.modelKey,
+            provider: version!.dependencySnapshot!.model.providerKey,
+            systemRole: snapshot.config.systemRole,
+            title: snapshot.config.displayName,
+          },
+          dependencySnapshot: version!.dependencySnapshot!,
+        }),
+      },
+      policyModel: { getSnapshot: async () => managedPolicy() },
+      validateDependencies: async () => ({ valid: true as const }),
+    }).getEffectiveBuiltinConfig({
+      ...DEFAULT_AGENT_CONFIG,
+      id: 'builtin-inbox-id',
+      slug: INBOX_SESSION_ID,
+      title: 'Legacy inbox',
+    });
+    expect(overlay.title).toBe(version!.config.displayName);
+    expect(overlay.systemRole).toBe(version!.config.systemRole);
+    expect(overlay.platform).toMatchObject({ managed: true, source: 'platform' });
+
+    const deleter = await callerFor({ authenticatedAt: new Date(), userId: ids.deleter });
+    await expect(
+      deleter.delete({
+        agentId: first.identity.id,
+        expectedDraftToken: first.draftToken,
+        expectedRevision: first.identity.revision,
+        reason: 'try delete provisioned default',
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(
+      deleter.archive({
+        agentId: first.identity.id,
+        expectedDraftToken: first.draftToken,
+        expectedRevision: first.identity.revision,
+        reason: 'try archive provisioned default',
+        replacementAgentId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+
+    const assigner = await callerFor({ authenticatedAt: new Date(), userId: ids.assigner });
+    const [assignment] = await db
+      .select()
+      .from(platformAgentAssignments)
+      .where(eq(platformAgentAssignments.agentId, first.identity.id));
+    const latest = await (
+      await callerFor({ authenticatedAt: new Date(), userId: ids.reader })
+    ).get({ id: first.identity.id });
+    await expect(
+      assigner.assignments.remove({
+        agentId: first.identity.id,
+        assignmentId: assignment!.id,
+        expectedDraftToken: latest.draftToken,
+        expectedRevision: latest.identity.revision,
+        reason: 'remove default global',
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(
+      assigner.assignments.upsert({
+        agentId: first.identity.id,
+        assignmentId: assignment!.id,
+        enabled: false,
+        expectedDraftToken: latest.draftToken,
+        expectedRevision: latest.identity.revision,
+        mode: 'default',
+        pinnedVersionId: null,
+        reason: 'disable default global',
+        targetId: '__global__',
+        targetType: 'global',
+        versionPolicy: 'latest_published',
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 });

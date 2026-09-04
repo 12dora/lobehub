@@ -1,5 +1,6 @@
 export * from './adminService';
 export * from './defaultInbox';
+export * from './defaultInboxProvision';
 export * from './dependencyValidator';
 export * from './effectiveResolver';
 export * from './enforcement';

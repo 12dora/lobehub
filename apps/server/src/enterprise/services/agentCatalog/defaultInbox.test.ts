@@ -1,4 +1,4 @@
-import { DEFAULT_AGENT_CONFIG, INBOX_SESSION_ID } from '@lobechat/const';
+import { DEFAULT_AGENT_CONFIG, DEFAULT_INBOX_AVATAR, INBOX_SESSION_ID } from '@lobechat/const';
 import { PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY } from '@lobechat/types';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -161,6 +161,29 @@ describe('PlatformDefaultInboxService', () => {
     });
     expect(resolveForExistingAgent).toHaveBeenCalledWith(captured, 'builtin-inbox-id');
     expect(validateDependencies).toHaveBeenCalledWith(db, dependencySnapshot);
+  });
+
+  it('overlays a provision-shaped published version onto the builtin inbox', async () => {
+    const captured = snapshot('v1', 'Lobe AI');
+    captured.config.avatar = DEFAULT_INBOX_AVATAR;
+    const service = new PlatformDefaultInboxService(db, 'user', {
+      flags: flagsOn,
+      materializationService: {
+        resolveForExistingAgent: vi.fn(async () => ({
+          agentId: 'builtin-inbox-id',
+          config: resolvedConfig(captured),
+          dependencySnapshot,
+        })),
+      },
+      resolver: { beginSystemOperation: vi.fn(async () => handle(captured)) },
+      validateDependencies: vi.fn(async () => ({ valid: true as const })),
+    });
+
+    await expect(service.getEffectiveBuiltinConfig(base())).resolves.toMatchObject({
+      avatar: DEFAULT_INBOX_AVATAR,
+      slug: INBOX_SESSION_ID,
+      title: 'Lobe AI',
+    });
   });
 
   it('keeps a captured V2 result pinned after the published pointer rolls back to V1', async () => {

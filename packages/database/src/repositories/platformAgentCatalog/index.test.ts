@@ -186,6 +186,21 @@ describe('PlatformAgentCatalogRepository', () => {
     expect(await repository.listVersionLabels(other.id)).toEqual([]);
   });
 
+  it('peeks the default-inbox identity without requiring a row lock', async () => {
+    expect(await repository.getDefaultIdentity()).toBeUndefined();
+    const inbox = await repository.createIdentity({
+      agentKey: 'default-inbox',
+      createdBy: USER_A,
+      isDefault: true,
+      systemKey: 'default-inbox',
+    });
+    await expect(repository.getDefaultIdentity()).resolves.toMatchObject({ id: inbox.id });
+    await expect(repository.getIdentityByAgentKey('default-inbox')).resolves.toMatchObject({
+      id: inbox.id,
+    });
+    await expect(repository.getIdentityByAgentKey('missing-key')).resolves.toBeUndefined();
+  });
+
   it('moves the published pointer with same-Agent and stale-CAS protection', async () => {
     const first = await repository.createIdentity({
       agentKey: 'first',
