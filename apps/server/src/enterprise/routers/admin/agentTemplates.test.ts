@@ -32,6 +32,8 @@ import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAudi
 import { adminRouter } from '../admin';
 import { platformRouter } from '../platform';
 import { deriveAgentTemplateIdentifier } from './agentTemplatesSupport';
+import type * as BuiltInAgentTemplatesModule from './builtInAgentTemplates';
+import { builtInAgentTemplatesForLocale } from './builtInAgentTemplates';
 
 const db: LobeChatDatabase = await getTestDB();
 const createAdminCaller = createCallerFactory(adminRouter);
@@ -52,9 +54,13 @@ vi.mock('../../services/platformAudit', () => ({
   },
 }));
 
-vi.mock('./builtInAgentTemplates', () => ({
-  builtInAgentTemplatesForImport: (locale?: string) => builtInSpy(locale),
-}));
+vi.mock('./builtInAgentTemplates', async (importOriginal) => {
+  const actual = await importOriginal<typeof BuiltInAgentTemplatesModule>();
+  return {
+    ...actual,
+    builtInAgentTemplatesForImport: (locale?: string) => builtInSpy(locale),
+  };
+});
 
 const builtinRow = (overrides: Record<string, unknown> = {}) => ({
   description: '',
@@ -667,6 +673,33 @@ describe('admin.agentTemplates list auto-seed', () => {
     const listed = await (await adminCaller()).list({ limit: 20, locale: 'zh-CN', offset: 0 });
     expect(listed.origin).toBe('managed');
     expect(listed.items[0]?.title).toBe('写作导师');
+  });
+
+  it('overlays untouched built-in rows to the console locale without writing', async () => {
+    const en = builtInAgentTemplatesForLocale('en-US')[0]!;
+    const zh = builtInAgentTemplatesForLocale('zh-CN')[0]!;
+    expect(zh.title).not.toBe(en.title);
+
+    await db.insert(platformAgentTemplates).values({
+      description: en.description,
+      enabled: true,
+      id: 'seeded-en',
+      identifier: en.identifier,
+      revision: 1,
+      source: 'builtin',
+      systemRole: en.systemRole,
+      title: en.title,
+    });
+
+    const caller = await adminCaller();
+    const listed = await caller.list({ limit: 20, locale: 'zh-CN', offset: 0 });
+    expect(listed.items[0]?.title).toBe(zh.title);
+    expect(listed.items[0]?.systemRole).toBe(zh.systemRole);
+    expect(listed.totalAll).toBe(1);
+
+    const [stored] = await db.select().from(platformAgentTemplates);
+    expect(stored?.title).toBe(en.title);
+    expect(stored?.systemRole).toBe(en.systemRole);
   });
 });
 

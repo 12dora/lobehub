@@ -158,6 +158,10 @@ export const builtInAgentTemplatesFromCatalog = (
   return rows;
 };
 
+/** Resolve the 40 built-in create-agent examples for a locale. */
+export const builtInAgentTemplatesForLocale = (locale?: string): BuiltInAgentTemplateRow[] =>
+  builtInAgentTemplatesFromCatalog(catalogFor(locale));
+
 /** Resolve the 40 built-in create-agent examples for `importBuiltins` and the unmanaged preview. */
 export const builtInAgentTemplatesForImport = (locale?: string): BuiltInAgentTemplateRow[] =>
-  builtInAgentTemplatesFromCatalog(catalogFor(locale));
+  builtInAgentTemplatesForLocale(locale);

@@ -94,6 +94,26 @@ describe('platform.agentTemplates.list locale seed', () => {
     expect(result.managed).toBe(true);
     expect(result.templates[0]?.title).toBe(builtInAgentTemplatesForImport('en-US')[0]!.title);
   });
+
+  it('overlays English-seeded rows to Chinese when listed with locale zh-CN', async () => {
+    const zhTitle = builtInAgentTemplatesForImport('zh-CN')[0]!.title;
+    const enTitle = builtInAgentTemplatesForImport('en-US')[0]!.title;
+    expect(zhTitle).not.toBe(enTitle);
+
+    await (await caller()).agentTemplates.list({ locale: 'en-US' });
+    const stored = await db.select().from(platformAgentTemplates);
+    expect(stored[0]?.title).toBe(enTitle);
+
+    const result = await (await caller()).agentTemplates.list({ locale: 'zh-CN' });
+    expect(result.managed).toBe(true);
+    expect(result.templates[0]?.title).toBe(zhTitle);
+    expect(result.templates[0]?.systemRole).toBe(
+      builtInAgentTemplatesForImport('zh-CN')[0]!.systemRole,
+    );
+
+    const still = await db.select().from(platformAgentTemplates);
+    expect(still[0]?.title).toBe(enTitle);
+  });
 });
 
 describe('platform.taskTemplates.list locale seed', () => {
@@ -120,5 +140,24 @@ describe('platform.taskTemplates.list locale seed', () => {
     const result = await (await caller()).taskTemplates.list({ locale: 'zz-ZZ' });
     expect(result.managed).toBe(true);
     expect(result.templates[0]?.title).toBe(listTaskTemplateLibrary('en-US')[0]!.title);
+  });
+
+  it('overlays English-seeded rows to Chinese when listed with locale zh-CN', async () => {
+    const zh = listTaskTemplateLibrary('zh-CN')[0]!;
+    const en = listTaskTemplateLibrary('en-US')[0]!;
+    expect(zh.title).not.toBe(en.title);
+
+    await (await caller()).taskTemplates.list({ locale: 'en-US' });
+    const stored = await db.select().from(platformTaskTemplates);
+    expect(stored[0]?.title).toBe(en.title);
+
+    const result = await (await caller()).taskTemplates.list({ locale: 'zh-CN' });
+    expect(result.managed).toBe(true);
+    expect(result.templates[0]?.title).toBe(zh.title);
+    expect(result.templates[0]?.description).toBe(zh.description);
+    expect(result.templates[0]?.instruction).toBe(zh.instruction);
+
+    const still = await db.select().from(platformTaskTemplates);
+    expect(still[0]?.title).toBe(en.title);
   });
 });

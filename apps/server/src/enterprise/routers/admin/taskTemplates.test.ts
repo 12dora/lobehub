@@ -757,6 +757,28 @@ describe('admin.taskTemplates list auto-seed', () => {
     expect(listed.origin).toBe('managed');
     expect(listed.items[0]?.title).toBe(listTaskTemplateLibrary('zh-CN')[0]!.title);
   });
+
+  it('overlays untouched library rows to the console locale without writing', async () => {
+    const en = listTaskTemplateLibrary('en-US')[0]!;
+    const zh = listTaskTemplateLibrary('zh-CN')[0]!;
+    expect(zh.title).not.toBe(en.title);
+    listDailyRecommendSpy.mockResolvedValue([en]);
+
+    const caller = await adminCaller();
+    const seeded = await caller.list({ limit: 20, locale: 'en-US', offset: 0 });
+    expect(seeded.items[0]?.title).toBe(en.title);
+
+    const listed = await caller.list({ limit: 20, locale: 'zh-CN', offset: 0 });
+    expect(listed.items[0]?.title).toBe(zh.title);
+    expect(listed.items[0]?.description).toBe(zh.description);
+    expect(listed.items[0]?.instruction).toBe(zh.instruction);
+    expect(listed.items[0]?.id).toBe(seeded.items[0]?.id);
+    expect(listed.totalAll).toBe(1);
+
+    const [stored] = await db.select().from(platformTaskTemplates);
+    expect(stored?.title).toBe(en.title);
+    expect(stored?.instruction).toBe(en.instruction);
+  });
 });
 
 describe('retired connectors (a provider removed from the catalogs after the row was written)', () => {

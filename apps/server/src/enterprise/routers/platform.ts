@@ -44,6 +44,10 @@ import {
   ensureAgentTemplateCatalogSeeded,
   ensureTaskTemplateCatalogSeeded,
 } from '../services/templateCatalogBootstrap';
+import {
+  overlayAgentTemplateLocale,
+  overlayTaskTemplateLocale,
+} from '../services/templateCatalogLocalization';
 import { isRenderableAgentTemplate, toPlatformAgentTemplate } from './admin/agentTemplatesSupport';
 import { isRenderableTaskTemplate, toPlatformTaskTemplate } from './admin/taskTemplatesSupport';
 import { withActiveUserWhenManaged } from './managedActiveUser';
@@ -106,7 +110,10 @@ export const platformRouter = router({
         await ensureAgentTemplateCatalogSeeded(ctx.serverDB, { locale: input?.locale });
 
         const model = new PlatformAgentTemplateModel(ctx.serverDB);
-        const rows = await model.listEnabled(AGENT_TEMPLATE_DISPLAY_MAX);
+        const rows = overlayAgentTemplateLocale(
+          await model.listEnabled(AGENT_TEMPLATE_DISPLAY_MAX),
+          input?.locale,
+        );
         return {
           managed: true,
           templates: rows
@@ -138,7 +145,10 @@ export const platformRouter = router({
         const model = new PlatformTaskTemplateModel(ctx.serverDB);
         // Both consumers render at most TASK_TEMPLATE_RECOMMEND_MAX_COUNT cards; cap server-side
         // so an unbounded catalog can never become an unbounded per-user response.
-        const rows = await model.listEnabled(TASK_TEMPLATE_RECOMMEND_MAX_COUNT);
+        const rows = overlayTaskTemplateLocale(
+          await model.listEnabled(TASK_TEMPLATE_RECOMMEND_MAX_COUNT),
+          input?.locale,
+        );
         return {
           managed: true,
           // A row referencing a since-retired connector cannot render; quarantine it here (it

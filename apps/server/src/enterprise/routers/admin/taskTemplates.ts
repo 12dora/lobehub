@@ -37,6 +37,7 @@ import {
 import { isModuleEnabled } from '../../services/moduleSettings';
 import { PlatformAuditService } from '../../services/platformAudit';
 import { ensureTaskTemplateCatalogSeeded } from '../../services/templateCatalogBootstrap';
+import { overlayTaskTemplateLocale } from '../../services/templateCatalogLocalization';
 import {
   deriveTaskTemplateIdentifier,
   fetchLibraryTaskTemplatesForImport,
@@ -278,7 +279,9 @@ export const adminTaskTemplatesRouter = router({
       });
 
       return {
-        items: page.items.map((row) => toAdminTaskTemplateItem(row)),
+        items: overlayTaskTemplateLocale(page.items, input.locale).map((row) =>
+          toAdminTaskTemplateItem(row),
+        ),
         origin: 'managed',
         totalAll,
         totalFiltered: page.total,

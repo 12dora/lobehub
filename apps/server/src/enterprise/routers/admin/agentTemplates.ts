@@ -37,6 +37,7 @@ import {
 import { isModuleEnabled } from '../../services/moduleSettings';
 import { PlatformAuditService } from '../../services/platformAudit';
 import { ensureAgentTemplateCatalogSeeded } from '../../services/templateCatalogBootstrap';
+import { overlayAgentTemplateLocale } from '../../services/templateCatalogLocalization';
 import {
   deriveAgentTemplateIdentifier,
   fetchBuiltInAgentTemplatesForImport,
@@ -264,7 +265,9 @@ export const adminAgentTemplatesRouter = router({
       });
 
       return {
-        items: page.items.map((row) => toAdminAgentTemplateItem(row)),
+        items: overlayAgentTemplateLocale(page.items, input.locale).map((row) =>
+          toAdminAgentTemplateItem(row),
+        ),
         origin: 'managed',
         totalAll,
         totalFiltered: page.total,
