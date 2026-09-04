@@ -1,6 +1,5 @@
 'use client';
 
-import { DEFAULT_INBOX_AVATAR } from '@lobechat/const';
 import { nanoid } from '@lobechat/utils';
 import { type IEditor } from '@lobehub/editor';
 import { HIDE_TOOLBAR_COMMAND } from '@lobehub/editor';
@@ -10,6 +9,8 @@ import { createStaticStyles, cssVar } from 'antd-style';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useScopedDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
+import { useScopedDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useFileStore } from '@/store/file';
 
 import { usePageAgentPanelControl } from '../RightPanel/OverrideContext';
@@ -32,11 +33,13 @@ export const useAskCopilotItem = (editor: IEditor | undefined): ChatInputActions
   const pageId = usePageEditorStore((s) => s.documentId);
   const setRightPanelMode = usePageEditorStore((s) => s.setRightPanelMode);
   const { toggle: togglePageAgentPanel } = usePageAgentPanelControl();
+  const inboxAvatar = useScopedDefaultInboxAvatar();
+  const inboxDisplayName = useScopedDefaultInboxDisplayName();
 
   return useMemo(() => {
     if (!editor) return [];
 
-    const label = t('cmdk.askLobeAI');
+    const label = t('cmdk.askLobeAI', { agent: inboxDisplayName });
 
     return [
       {
@@ -94,7 +97,7 @@ export const useAskCopilotItem = (editor: IEditor | undefined): ChatInputActions
               editor.blur();
             }}
           >
-            <Avatar avatar={DEFAULT_INBOX_AVATAR} shape="square" size={16} />
+            <Avatar avatar={inboxAvatar} shape="square" size={16} />
             <span>{label}</span>
           </Block>
         ),
@@ -103,5 +106,14 @@ export const useAskCopilotItem = (editor: IEditor | undefined): ChatInputActions
         onClick: () => {},
       },
     ];
-  }, [addSelectionContext, editor, pageId, setRightPanelMode, t, togglePageAgentPanel]);
+  }, [
+    addSelectionContext,
+    editor,
+    inboxAvatar,
+    inboxDisplayName,
+    pageId,
+    setRightPanelMode,
+    t,
+    togglePageAgentPanel,
+  ]);
 };

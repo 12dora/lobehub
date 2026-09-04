@@ -5,8 +5,9 @@ import isEqual from 'fast-deep-equal';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { DEFAULT_AVATAR, DEFAULT_INBOX_AVATAR } from '@/const/meta';
+import { DEFAULT_AVATAR } from '@/const/meta';
 import { contextSelectors, useConversationStore } from '@/features/Conversation/store';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors, agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
@@ -29,6 +30,7 @@ const AgentInfo = memo(() => {
   );
   const fontSize = useUserStore(userGeneralSettingsSelectors.fontSize);
   const inboxDisplayName = useDefaultInboxDisplayName(meta.title);
+  const inboxAvatar = useDefaultInboxAvatar(meta.avatar);
 
   const displayTitle = isInbox
     ? inboxDisplayName
@@ -56,7 +58,7 @@ const AgentInfo = memo(() => {
   return (
     <Flexbox gap={12}>
       <Avatar
-        avatar={isInbox ? meta.avatar || DEFAULT_INBOX_AVATAR : meta.avatar || DEFAULT_AVATAR}
+        avatar={isInbox ? inboxAvatar : meta.avatar || DEFAULT_AVATAR}
         background={meta.backgroundColor}
         shape={'square'}
         size={64}

@@ -7,6 +7,13 @@ import {
 } from './reloadAgentTemplate';
 import type { AdminAgentTemplateItem } from './types';
 
+const i18nState = vi.hoisted(() => ({
+  language: 'en',
+  resolvedLanguage: 'zh-CN' as string | undefined,
+}));
+
+vi.mock('i18next', () => ({ default: i18nState }));
+
 const row = (overrides: Partial<AdminAgentTemplateItem> = {}): AdminAgentTemplateItem =>
   ({
     avatar: null,
@@ -35,6 +42,7 @@ describe('reloadAgentTemplate', () => {
 
     expect(list).toHaveBeenCalledWith({
       limit: AGENT_TEMPLATE_RECOVERY_SCAN_LIMIT,
+      locale: 'zh-CN',
       offset: 0,
       query: 'data-analyst',
     });

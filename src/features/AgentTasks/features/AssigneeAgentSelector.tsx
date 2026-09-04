@@ -1,4 +1,3 @@
-import { DEFAULT_INBOX_AVATAR } from '@lobechat/const';
 import { Flexbox, Popover, Text, Tooltip } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
 import isEqual from 'fast-deep-equal';
@@ -9,6 +8,8 @@ import { useTranslation } from 'react-i18next';
 import { type SidebarAgentItem } from '@/database/repositories/home';
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
 import AgentItem from '@/features/PageEditor/Copilot/AgentSelector/AgentItem';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useFetchAgentList } from '@/hooks/useFetchAgentList';
 import { usePermission } from '@/hooks/usePermission';
 import { useAgentStore } from '@/store/agent';
@@ -86,6 +87,8 @@ const AssigneeAgentSelector = memo<AssigneeAgentSelectorProps>(
     const inboxMeta = useAgentStore((s) =>
       inboxAgentId ? agentSelectors.getAgentMetaById(inboxAgentId)(s) : undefined,
     );
+    const inboxAvatar = useDefaultInboxAvatar(inboxMeta?.avatar);
+    const inboxTitle = useDefaultInboxDisplayName(inboxMeta?.title);
 
     useFetchAgentList();
 
@@ -102,11 +105,11 @@ const AssigneeAgentSelector = memo<AssigneeAgentSelectorProps>(
       if (inboxAgentId && !hasInbox) {
         return [
           {
-            avatar: inboxMeta?.avatar || DEFAULT_INBOX_AVATAR,
+            avatar: inboxAvatar,
             description: null,
             id: inboxAgentId,
             pinned: false,
-            title: inboxMeta?.title || t('inbox.title', { ns: 'chat' }),
+            title: inboxTitle,
             type: 'agent' as const,
             updatedAt: new Date(),
           },
@@ -115,7 +118,7 @@ const AssigneeAgentSelector = memo<AssigneeAgentSelectorProps>(
       }
 
       return available;
-    }, [pinnedAgents, agentGroups, ungroupedAgents, inboxAgentId, inboxMeta, t]);
+    }, [pinnedAgents, agentGroups, ungroupedAgents, inboxAgentId, inboxAvatar, inboxTitle]);
 
     const privateAgents = useMemo<SidebarAgentItem[]>(() => {
       const groupedItems = privateAgentGroups.flatMap((group) => group.items);

@@ -1,6 +1,6 @@
 'use client';
 
-import { AGENT_PROFILE_URL, DEFAULT_INBOX_AVATAR, INBOX_SESSION_ID } from '@lobechat/const';
+import { AGENT_PROFILE_URL, INBOX_SESSION_ID } from '@lobechat/const';
 import type { AgentEvalRunStatus, EvalRunInputConfig } from '@lobechat/types';
 import { Accordion, AccordionItem, ActionIcon, Avatar, Flexbox } from '@lobehub/ui';
 import { Select, useModalContext } from '@lobehub/ui/base-ui';
@@ -12,6 +12,8 @@ import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router';
 
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
+import { useScopedDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
+import { useScopedDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { agentService } from '@/services/agent';
 import { useEvalStore } from '@/store/eval';
 
@@ -54,7 +56,6 @@ export interface RunEditContentProps {
 
 const RunEditContent: FC<RunEditContentProps> = ({ formId, onLoadingChange, run }) => {
   const { t } = useTranslation('eval');
-  const { t: tChat } = useTranslation('chat');
   const { close } = useModalContext();
   const { message } = App.useApp();
   const navigate = useWorkspaceAwareNavigate();
@@ -66,6 +67,8 @@ const RunEditContent: FC<RunEditContentProps> = ({ formId, onLoadingChange, run 
 
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [loadingAgents, setLoadingAgents] = useState(false);
+  const inboxAvatar = useScopedDefaultInboxAvatar();
+  const inboxDisplayName = useScopedDefaultInboxDisplayName();
 
   const canChangeConfig = run?.status === 'idle';
   const isFinished = run?.status === 'completed';
@@ -98,11 +101,11 @@ const RunEditContent: FC<RunEditContentProps> = ({ formId, onLoadingChange, run 
 
   const inboxAgent: AgentOption = useMemo(
     () => ({
-      avatar: DEFAULT_INBOX_AVATAR,
+      avatar: inboxAvatar,
       id: INBOX_SESSION_ID,
-      title: tChat('inbox.title'),
+      title: inboxDisplayName,
     }),
-    [tChat],
+    [inboxAvatar, inboxDisplayName],
   );
 
   const allAgents = useMemo(() => [inboxAgent, ...agents], [inboxAgent, agents]);

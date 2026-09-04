@@ -1,6 +1,6 @@
 'use client';
 
-import { AGENT_CHAT_URL, DEFAULT_INBOX_AVATAR } from '@lobechat/const';
+import { AGENT_CHAT_URL } from '@lobechat/const';
 import { Avatar, Icon } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
 import { Loader2 } from 'lucide-react';
@@ -9,6 +9,7 @@ import { memo } from 'react';
 import NavItem from '@/features/NavPanel/components/NavItem';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import WorkspaceLink from '@/features/Workspace/WorkspaceLink';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
@@ -52,7 +53,7 @@ const InboxEntry = memo(() => {
   );
 
   const title = useDefaultInboxDisplayName(inboxMeta.title);
-  const avatar = inboxMeta.avatar || DEFAULT_INBOX_AVATAR;
+  const avatar = useDefaultInboxAvatar(inboxMeta.avatar);
   const url = AGENT_CHAT_URL(inboxAgentId, false);
 
   const avatarNode = <Avatar emojiScaleWithBackground avatar={avatar} shape={'square'} size={24} />;

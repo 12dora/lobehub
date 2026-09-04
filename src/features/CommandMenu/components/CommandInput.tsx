@@ -5,8 +5,10 @@ import { ArrowLeft, X } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
-import { agentSelectors } from '@/store/agent/selectors';
+import { agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
 
 import { useCommandMenuContext } from '../CommandMenuContext';
 import { styles } from '../styles';
@@ -33,6 +35,10 @@ const CommandInput = memo(() => {
   const activeAgentMeta = useAgentStore((s) =>
     activeAgentId ? agentSelectors.getAgentMetaById(activeAgentId)(s) : undefined,
   );
+  const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
+  const isInboxActive = !!activeAgentId && activeAgentId === inboxAgentId;
+  const inboxAvatar = useDefaultInboxAvatar(activeAgentMeta?.avatar);
+  const inboxTitle = useDefaultInboxDisplayName(activeAgentMeta?.title);
 
   const hasPages = pages.length > 0;
   const hasSelectedAgent = !!selectedAgent;
@@ -65,14 +71,14 @@ const CommandInput = memo(() => {
               icon={
                 <Avatar
                   emojiScaleWithBackground
-                  avatar={activeAgentMeta?.avatar || DEFAULT_AVATAR}
                   background={activeAgentMeta?.backgroundColor}
                   shape="square"
                   size={14}
+                  avatar={isInboxActive ? inboxAvatar : activeAgentMeta?.avatar || DEFAULT_AVATAR}
                 />
               }
             >
-              {activeAgentMeta?.title || t('defaultAgent')}
+              {isInboxActive ? inboxTitle : activeAgentMeta?.title || t('defaultAgent')}
             </Tag>
           ) : (
             menuContext !== 'general' && <Tag className={styles.contextTag}>{contextName}</Tag>

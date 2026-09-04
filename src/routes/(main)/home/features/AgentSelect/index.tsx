@@ -6,7 +6,8 @@ import { ChevronsUpDownIcon } from 'lucide-react';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { DEFAULT_AVATAR, DEFAULT_INBOX_AVATAR } from '@/const/meta';
+import { DEFAULT_AVATAR } from '@/const/meta';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useFetchAgentList } from '@/hooks/useFetchAgentList';
 import { agentService } from '@/services/agent';
@@ -65,9 +66,9 @@ const AgentSelect = memo(() => {
   const displayTitle = isInboxDisplay
     ? inboxDisplayName
     : displayMeta?.title || t('defaultSession', { ns: 'common' });
-  const displayAvatar =
-    (typeof displayMeta?.avatar === 'string' ? displayMeta.avatar : undefined) ||
-    (isInboxDisplay ? DEFAULT_INBOX_AVATAR : DEFAULT_AVATAR);
+  const storedAvatar = typeof displayMeta?.avatar === 'string' ? displayMeta.avatar : undefined;
+  const inboxAvatar = useDefaultInboxAvatar(storedAvatar);
+  const displayAvatar = isInboxDisplay ? inboxAvatar : storedAvatar || DEFAULT_AVATAR;
   const displayBackground = displayMeta?.backgroundColor || undefined;
 
   const handleSelect = (agentId: string) => {

@@ -35,7 +35,9 @@ export const resolveFaviconHref = (
   size?: '32x32',
   now = Date.now(),
 ): string => {
-  if (state === 'default' && runtimeFaviconUrl) {
+  // A published favicon owns the tab in every state: swapping in the built-in
+  // status icon would flash the product brand at a white-labelled platform.
+  if (runtimeFaviconUrl) {
     return withRuntimeBrandingRevision(runtimeFaviconUrl, publishedRevision);
   }
 

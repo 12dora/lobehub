@@ -1,9 +1,10 @@
-import { DEFAULT_AVATAR, DEFAULT_INBOX_AVATAR } from '@lobechat/const';
+import { DEFAULT_AVATAR } from '@lobechat/const';
 import { Avatar, preventDefault } from '@lobehub/ui';
 import { Command } from 'cmdk';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
@@ -21,6 +22,7 @@ const AskAgentCommands = memo(() => {
   const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
   const inboxMeta = useAgentStore(agentSelectors.getAgentMetaById(inboxAgentId));
   const inboxDisplayName = useDefaultInboxDisplayName(inboxMeta.title);
+  const inboxAvatar = useDefaultInboxAvatar(inboxMeta.avatar);
   const allAgents = useHomeStore(homeAgentListSelectors.allAgents);
 
   // Check if search starts with "@"
@@ -66,9 +68,9 @@ const AskAgentCommands = memo(() => {
         <Command.Item
           value="@lobe-ai"
           onMouseDown={preventDefault}
-          onSelect={() => handleAgentSelect(inboxAgentId, inboxDisplayName, DEFAULT_INBOX_AVATAR)}
+          onSelect={() => handleAgentSelect(inboxAgentId, inboxDisplayName, inboxAvatar)}
         >
-          <Avatar emojiScaleWithBackground avatar={DEFAULT_INBOX_AVATAR} shape="square" size={18} />
+          <Avatar emojiScaleWithBackground avatar={inboxAvatar} shape="square" size={18} />
           <div className={styles.itemContent}>
             <div className={styles.itemLabel}>@{inboxDisplayName}</div>
           </div>

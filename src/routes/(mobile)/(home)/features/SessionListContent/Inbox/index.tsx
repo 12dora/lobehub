@@ -2,7 +2,7 @@ import { AGENT_CHAT_URL } from '@lobechat/const';
 import { memo } from 'react';
 import { Link } from 'react-router';
 
-import { DEFAULT_INBOX_AVATAR } from '@/const/meta';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useNavigateToAgent } from '@/hooks/useNavigateToAgent';
 import { useAgentStore } from '@/store/agent';
@@ -20,6 +20,7 @@ const Inbox = memo(() => {
   const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
   const inboxMeta = useAgentStore(agentSelectors.getAgentMetaById(inboxAgentId));
   const inboxDisplayName = useDefaultInboxDisplayName(inboxMeta.title);
+  const inboxAvatar = useDefaultInboxAvatar(inboxMeta.avatar);
 
   return (
     <Link
@@ -32,7 +33,7 @@ const Inbox = memo(() => {
     >
       <ListItem
         active={isInboxActive}
-        avatar={DEFAULT_INBOX_AVATAR}
+        avatar={inboxAvatar}
         key={'inbox'}
         title={inboxDisplayName}
         styles={{

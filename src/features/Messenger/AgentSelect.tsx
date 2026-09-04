@@ -7,6 +7,9 @@ import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
 import { DEFAULT_AVATAR } from '@/const/meta';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
+import { resolveDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
+import { resolveDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { messengerKeys } from '@/libs/swr/keys';
 import { messengerService } from '@/services/messenger';
 
@@ -26,6 +29,7 @@ interface AgentSelectProps extends Omit<SelectProps<string>, 'options' | 'value'
 const AgentSelect = memo<AgentSelectProps>(
   ({ value, onChange, workspaceId, defaultToInbox, ...rest }) => {
     const { t: tCommon } = useTranslation('common');
+    const branding = useBranding();
     // Cascading fetch: agents are scoped to the selected `workspaceId` (or
     // personal when null). The scope is part of the SWR key so switching scope
     // refetches the right list.
@@ -37,15 +41,18 @@ const AgentSelect = memo<AgentSelectProps>(
     const options = useMemo(
       () =>
         (agentsSWR.data ?? []).map((agent) => {
-          const title = agent.title || defaultAgentTitle;
+          // The scope's inbox follows the runtime brand rather than its stored row.
+          const title = agent.isInbox
+            ? resolveDefaultInboxDisplayName(agent.title, branding)
+            : agent.title || defaultAgentTitle;
+          const avatar = agent.isInbox
+            ? resolveDefaultInboxAvatar(branding, agent.avatar)
+            : agent.avatar || DEFAULT_AVATAR;
+
           return {
             label: (
               <Flexbox horizontal align={'center'} gap={8}>
-                <Avatar
-                  avatar={agent.avatar || DEFAULT_AVATAR}
-                  background={agent.backgroundColor ?? undefined}
-                  size={20}
-                />
+                <Avatar avatar={avatar} background={agent.backgroundColor ?? undefined} size={20} />
                 <Text ellipsis>{title}</Text>
               </Flexbox>
             ),
@@ -53,7 +60,7 @@ const AgentSelect = memo<AgentSelectProps>(
             value: agent.id,
           };
         }),
-      [agentsSWR.data, defaultAgentTitle],
+      [agentsSWR.data, branding, defaultAgentTitle],
     );
 
     // Inbox (LobeAI) agent of the current scope, pinned to the top server-side.

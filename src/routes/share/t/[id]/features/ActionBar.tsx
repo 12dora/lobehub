@@ -3,9 +3,10 @@ import { HandIcon } from 'lucide-react';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { DEFAULT_AVATAR, DEFAULT_INBOX_AVATAR } from '@/const/meta';
+import { DEFAULT_AVATAR } from '@/const/meta';
 import GroupAvatar from '@/features/GroupAvatar';
 import WorkspaceLink from '@/features/Workspace/WorkspaceLink';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { type SharedTopicData } from '@/types/topic';
 
@@ -18,6 +19,7 @@ const ActionBar = memo<ActionBarProps>(({ data }) => {
   const isGroup = !!data?.groupId;
   const isInboxAgent = !isGroup && data?.agentMeta?.slug === 'inbox';
   const inboxDisplayName = useDefaultInboxDisplayName(data?.agentMeta?.title);
+  const inboxAvatar = useDefaultInboxAvatar(data?.agentMeta?.avatar);
   const agentOrGroupTitle =
     data?.groupMeta?.title || (isInboxAgent ? inboxDisplayName : data?.agentMeta?.title);
   const agentMarketIdentifier = data?.agentMeta?.marketIdentifier;
@@ -39,7 +41,7 @@ const ActionBar = memo<ActionBarProps>(({ data }) => {
 
     // For inbox agent: skip avatar as it's the same as product icon
     if (isInboxAgent) {
-      return <Avatar avatar={DEFAULT_INBOX_AVATAR} size={28} />;
+      return <Avatar avatar={inboxAvatar} size={28} />;
     }
 
     // For agent: use single Avatar

@@ -9,6 +9,7 @@ import { useTheme } from 'antd-style';
 import isEqual from 'fast-deep-equal';
 import { memo, useEffect, useMemo, useRef } from 'react';
 
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useEnabledChatModels } from '@/hooks/useEnabledChatModels';
 import { useFetchAgentList } from '@/hooks/useFetchAgentList';
@@ -40,6 +41,7 @@ const OverlaySnapshotPublisher = memo(() => {
     inboxAgentId ? agentSelectors.getAgentMetaById(inboxAgentId)(s) : {},
   );
   const inboxDisplayName = useDefaultInboxDisplayName(inboxMeta.title);
+  const inboxAvatar = useDefaultInboxAvatar(inboxMeta.avatar);
   const agents = useMemo(() => allAgents.filter((item) => item.type === 'agent'), [allAgents]);
 
   const agentOptions = useMemo<ScreenCaptureAgentOption[]>(
@@ -48,9 +50,9 @@ const OverlaySnapshotPublisher = memo(() => {
         agents,
         inboxDisplayName,
         inboxAgentId,
-        inboxMeta,
+        inboxMeta: { ...inboxMeta, avatar: inboxAvatar },
       }),
-    [agents, inboxAgentId, inboxDisplayName, inboxMeta],
+    [agents, inboxAgentId, inboxAvatar, inboxDisplayName, inboxMeta],
   );
 
   const defaultAgentId = useMemo(

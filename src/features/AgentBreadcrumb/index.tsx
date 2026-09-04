@@ -10,6 +10,7 @@ import urlJoin from 'url-join';
 
 import { useActiveWorkspaceSlug } from '@/business/client/hooks/useActiveWorkspaceSlug';
 import { buildWorkspaceAwarePath } from '@/features/Workspace/workspaceAwarePath';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import {
   buildPrefixedAgentRoutePath,
   parseAgentPathname,
@@ -36,8 +37,9 @@ const AgentBreadcrumb = memo<AgentBreadcrumbProps>(({ agentId, title }) => {
   const agentTitle = useAgentStore((s) => agentSelectors.getAgentMetaById(agentId)(s).title);
   const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
   const isInbox = !!inboxAgentId && agentId === inboxAgentId;
+  const inboxDisplayName = useDefaultInboxDisplayName(agentTitle);
   const displayTitle = isInbox
-    ? agentTitle || t('inbox.title', { ns: 'chat' })
+    ? inboxDisplayName
     : agentTitle || t('defaultSession', { ns: 'common' });
   const agentRoute = useMemo(() => parseAgentPathname(pathname), [pathname]);
   const agentHomePath = useMemo(() => {

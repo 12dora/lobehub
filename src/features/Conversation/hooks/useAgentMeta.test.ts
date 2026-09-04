@@ -1,7 +1,11 @@
 import { act, renderHook } from '@testing-library/react';
+import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { RuntimeBrandingProvider } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useAgentStore } from '@/store/agent';
+import type { PlatformPublicSnapshot } from '@/types/platform/publicSnapshot';
+import { DISABLED_PLATFORM_PUBLIC_SNAPSHOT } from '@/types/platform/publicSnapshot';
 
 import type * as ConversationStoreModule from '../store';
 import { useConversationStore } from '../store';
@@ -17,6 +21,35 @@ vi.mock('../store', async (importOriginal) => {
     useConversationStore: vi.fn(),
   };
 });
+
+const PUBLISHED_SNAPSHOT: PlatformPublicSnapshot = {
+  ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
+  branding: {
+    defaultAgentDisplayName: null,
+    emailFrom: null,
+    emailSenderName: null,
+    faviconUrl: null,
+    homeUrl: null,
+    iconUrl: '/aihub-icon.png',
+    legalName: null,
+    logoUrl: '/aihub.png',
+    name: 'AIHub',
+    ogImageUrl: null,
+    pageTitleTemplate: null,
+    privacyUrl: null,
+    revision: '9',
+    shortName: null,
+    supportUrl: null,
+    termsUrl: null,
+    themeDefaults: { primaryColor: null },
+  },
+  brandingRevision: '9',
+  logoUrl: '/aihub.png',
+  platformName: 'AIHub',
+};
+
+const withPublishedBranding = ({ children }: { children: ReactNode }) =>
+  createElement(RuntimeBrandingProvider, { children, publicSnapshot: PUBLISHED_SNAPSHOT });
 
 describe('useAgentMeta', () => {
   it('should return agent meta for regular (non-builtin) agents', () => {
@@ -114,6 +147,47 @@ describe('useAgentMeta', () => {
 
     expect(result.current.avatar).toBe('/icons/icon-lobe.png');
     expect(result.current.title).toBe('Lobe AI');
+  });
+
+  it('should replace the builtin inbox avatar with the published brand icon', () => {
+    const mockInboxAgentId = 'inbox-agent-id';
+
+    vi.mocked(useConversationStore).mockImplementation((selector: any) => {
+      const state = { context: { agentId: mockInboxAgentId } };
+      return selector(state);
+    });
+
+    act(() => {
+      useAgentStore.setState({
+        agentMap: { [mockInboxAgentId]: { avatar: '/avatars/lobe-ai.png' } },
+        builtinAgentIdMap: { inbox: mockInboxAgentId },
+      });
+    });
+
+    const { result } = renderHook(() => useAgentMeta(), { wrapper: withPublishedBranding });
+
+    expect(result.current.avatar).toBe('/aihub-icon.png');
+    expect(result.current.title).toBe('AIHub AI');
+  });
+
+  it('should keep a customised inbox avatar even when a brand is published', () => {
+    const mockInboxAgentId = 'inbox-agent-id';
+
+    vi.mocked(useConversationStore).mockImplementation((selector: any) => {
+      const state = { context: { agentId: mockInboxAgentId } };
+      return selector(state);
+    });
+
+    act(() => {
+      useAgentStore.setState({
+        agentMap: { [mockInboxAgentId]: { avatar: '🤖' } },
+        builtinAgentIdMap: { inbox: mockInboxAgentId },
+      });
+    });
+
+    const { result } = renderHook(() => useAgentMeta(), { wrapper: withPublishedBranding });
+
+    expect(result.current.avatar).toBe('🤖');
   });
 
   it('should preserve custom title for page agent (builtin)', () => {

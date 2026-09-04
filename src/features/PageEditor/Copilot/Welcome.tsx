@@ -4,9 +4,9 @@ import { Avatar, Flexbox, Markdown, Text } from '@lobehub/ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { DEFAULT_INBOX_AVATAR } from '@/const/index';
 import { conversationSelectors, useConversationStore } from '@/features/Conversation';
 import SuggestQuestions from '@/features/SuggestQuestions';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors } from '@/store/agent/selectors';
 
@@ -14,6 +14,7 @@ const AgentBuilderWelcome = memo(() => {
   const { t } = useTranslation('chat');
   const agentId = useConversationStore(conversationSelectors.agentId);
   const agent = useAgentStore(agentByIdSelectors.getAgentConfigById(agentId));
+  const avatar = useDefaultInboxAvatar(agent?.avatar);
 
   return (
     <>
@@ -25,7 +26,7 @@ const AgentBuilderWelcome = memo(() => {
           paddingBottom: 16,
         }}
       >
-        <Avatar avatar={agent?.avatar || DEFAULT_INBOX_AVATAR} shape={'square'} size={78} />
+        <Avatar avatar={avatar} shape={'square'} size={78} />
         <Text fontSize={24} weight={'bold'}>
           {t('pageCopilot.title')}
         </Text>

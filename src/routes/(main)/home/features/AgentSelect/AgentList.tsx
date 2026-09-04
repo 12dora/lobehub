@@ -7,8 +7,9 @@ import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
-import { DEFAULT_AVATAR, DEFAULT_INBOX_AVATAR } from '@/const/meta';
+import { DEFAULT_AVATAR } from '@/const/meta';
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
@@ -56,6 +57,7 @@ const AgentList = memo<AgentListProps>(({ activeAgentId, error, onRetry, onSelec
   const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
   const inboxMeta = useAgentStore(agentSelectors.getAgentMetaById(inboxAgentId ?? ''));
   const inboxDisplayName = useDefaultInboxDisplayName(inboxMeta?.title);
+  const inboxAvatar = useDefaultInboxAvatar(inboxMeta?.avatar);
   const allAgents = useHomeStore(homeAgentListSelectors.allAgents);
 
   // Flat list: inbox first, then all sidebar agents (pinned + grouped + ungrouped)
@@ -66,9 +68,7 @@ const AgentList = memo<AgentListProps>(({ activeAgentId, error, onRetry, onSelec
 
     if (inboxAgentId) {
       out.push({
-        avatar:
-          (typeof inboxMeta?.avatar === 'string' ? inboxMeta.avatar : undefined) ??
-          DEFAULT_INBOX_AVATAR,
+        avatar: inboxAvatar,
         backgroundColor: inboxMeta?.backgroundColor || undefined,
         id: inboxAgentId,
         title: inboxDisplayName,
@@ -91,7 +91,7 @@ const AgentList = memo<AgentListProps>(({ activeAgentId, error, onRetry, onSelec
     }
 
     return out;
-  }, [inboxAgentId, inboxMeta, inboxDisplayName, allAgents, t]);
+  }, [inboxAgentId, inboxMeta, inboxAvatar, inboxDisplayName, allAgents, t]);
 
   // Error gated ahead of the skeleton so a failed list fetch shows Retry instead
   // of a permanent skeleton (`isAgentListInit` only flips on success).

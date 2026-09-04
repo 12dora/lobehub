@@ -1,6 +1,6 @@
 'use client';
 
-import { AGENT_CHAT_URL, DEFAULT_INBOX_AVATAR } from '@lobechat/const';
+import { AGENT_CHAT_URL } from '@lobechat/const';
 import { Claude, Cline, Cursor, OpenAI } from '@lobehub/icons';
 import {
   Avatar,
@@ -22,6 +22,8 @@ import { useTranslation } from 'react-i18next';
 
 import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
+import { useScopedDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
+import { useScopedDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { builtinAgentSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
@@ -118,6 +120,8 @@ const Platform = memo<PlatformProps>(
   ({ lite, identifier, mobile, expandCodeByDefault, downloadUrl }) => {
     const { t } = useTranslation('discover');
     const { name: appName } = useBranding();
+    const inboxAvatar = useScopedDefaultInboxAvatar();
+    const inboxDisplayName = useScopedDefaultInboxDisplayName();
     const navigate = useWorkspaceAwareNavigate();
     const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
     const sendMessage = useChatStore((s) => s.sendMessage);
@@ -258,12 +262,12 @@ const Platform = memo<PlatformProps>(
             <Flexbox padding={8}>
               <Button
                 block
-                icon={<Avatar avatar={DEFAULT_INBOX_AVATAR} size={18} />}
+                icon={<Avatar avatar={inboxAvatar} size={18} />}
                 size={'large'}
                 type={'primary'}
                 onClick={handleUseOnLobeAI}
               >
-                {t('skills.details.sidebar.agent.useOnLobeAI')}
+                {t('skills.details.sidebar.agent.useOnLobeAI', { agent: inboxDisplayName })}
               </Button>
             </Flexbox>
           </Flexbox>

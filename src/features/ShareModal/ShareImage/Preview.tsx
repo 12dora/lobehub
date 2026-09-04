@@ -7,6 +7,7 @@ import { memo } from 'react';
 import { ProductLogo } from '@/components/Branding';
 import PluginTag from '@/features/PluginTag';
 import { filterToolIds } from '@/helpers/toolFilters';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors, agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
@@ -82,7 +83,9 @@ const Preview = memo<PreviewProps>(
     const inboxDisplayName = useDefaultInboxDisplayName(configuredInboxTitle);
     const displayTitle =
       (isHeaderInbox ?? isInbox) ? inboxDisplayName : headerMeta?.title || title || currentTitle;
-    const displayAvatar = headerMeta?.avatar || currentAvatar;
+    const storedAvatar = headerMeta?.avatar || currentAvatar;
+    const inboxAvatar = useDefaultInboxAvatar(storedAvatar);
+    const displayAvatar = (isHeaderInbox ?? isInbox) ? inboxAvatar : storedAvatar;
     const displayBackgroundColor = headerMeta?.backgroundColor || currentBackgroundColor;
     const displayModel = headerModel || currentModel;
     const displayPlugins = headerPlugins || currentPlugins;

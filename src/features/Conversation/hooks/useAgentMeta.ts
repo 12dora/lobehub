@@ -2,6 +2,7 @@ import { INBOX_SESSION_ID } from '@lobechat/const';
 import { type MetaData } from '@lobechat/types';
 import { useMemo } from 'react';
 
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
@@ -24,15 +25,16 @@ export const useAgentMeta = (messageAgentId?: string | null): MetaData => {
   const agentMeta = useAgentStore(agentSelectors.getAgentMetaById(agentId));
   const builtinAgentIdMap = useAgentStore((s) => s.builtinAgentIdMap);
   const inboxDisplayName = useDefaultInboxDisplayName(agentMeta.title);
+  const inboxAvatar = useDefaultInboxAvatar(agentMeta.avatar);
 
   return useMemo(() => {
     // Check if the current agent is a builtin agent
     const isInboxAgent = builtinAgentIdMap[INBOX_SESSION_ID] === agentId;
 
-    if (isInboxAgent) return { ...agentMeta, title: inboxDisplayName };
+    if (isInboxAgent) return { ...agentMeta, avatar: inboxAvatar, title: inboxDisplayName };
 
     return agentMeta;
-  }, [agentId, agentMeta, builtinAgentIdMap, inboxDisplayName]);
+  }, [agentId, agentMeta, builtinAgentIdMap, inboxAvatar, inboxDisplayName]);
 };
 
 /**

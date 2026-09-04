@@ -1,6 +1,6 @@
 'use client';
 
-import { AGENT_CHAT_URL, DEFAULT_INBOX_AVATAR } from '@lobechat/const';
+import { AGENT_CHAT_URL } from '@lobechat/const';
 import { Button, Flexbox, Icon, Text } from '@lobehub/ui';
 import { useModalContext } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
@@ -13,6 +13,8 @@ import { message } from '@/components/AntdStaticMethods';
 import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
 import AgentItem from '@/features/PageEditor/Copilot/AgentSelector/AgentItem';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useFetchAgentList } from '@/hooks/useFetchAgentList';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
@@ -70,6 +72,8 @@ const MoveTopicsContent = memo<MoveTopicsContentProps>(({ onMoved, sourceAgentId
   const inboxMeta = useAgentStore((s) =>
     inboxAgentId ? agentSelectors.getAgentMetaById(inboxAgentId)(s) : undefined,
   );
+  const inboxAvatar = useDefaultInboxAvatar(inboxMeta?.avatar);
+  const inboxTitle = useDefaultInboxDisplayName(inboxMeta?.title);
 
   useFetchAgentList();
 
@@ -83,11 +87,11 @@ const MoveTopicsContent = memo<MoveTopicsContentProps>(({ onMoved, sourceAgentId
       inboxAgentId && !available.some((a) => a.id === inboxAgentId)
         ? [
             {
-              avatar: inboxMeta?.avatar || DEFAULT_INBOX_AVATAR,
+              avatar: inboxAvatar,
               description: null,
               id: inboxAgentId,
               pinned: false,
-              title: inboxMeta?.title || t('inbox.title', { ns: 'chat' }),
+              title: inboxTitle,
               type: 'agent' as const,
               updatedAt: new Date(),
             },
@@ -95,7 +99,7 @@ const MoveTopicsContent = memo<MoveTopicsContentProps>(({ onMoved, sourceAgentId
           ]
         : available;
     return withInbox.filter((a) => a.id !== sourceAgentId);
-  }, [agents, inboxAgentId, inboxMeta, sourceAgentId, t]);
+  }, [agents, inboxAgentId, inboxAvatar, inboxTitle, sourceAgentId]);
 
   const filteredAgents = useMemo(() => {
     const q = search.trim().toLowerCase();

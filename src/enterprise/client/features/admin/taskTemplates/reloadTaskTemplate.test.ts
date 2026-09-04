@@ -7,6 +7,13 @@ import {
 } from './reloadTaskTemplate';
 import type { AdminTaskTemplateItem } from './types';
 
+const i18nState = vi.hoisted(() => ({
+  language: 'en',
+  resolvedLanguage: 'zh-CN' as string | undefined,
+}));
+
+vi.mock('i18next', () => ({ default: i18nState }));
+
 const row = (overrides: Partial<AdminTaskTemplateItem> = {}): AdminTaskTemplateItem =>
   ({
     category: 'engineering',
@@ -37,6 +44,7 @@ describe('reloadTaskTemplate', () => {
 
     expect(list).toHaveBeenCalledWith({
       limit: TASK_TEMPLATE_RECOVERY_SCAN_LIMIT,
+      locale: 'zh-CN',
       offset: 0,
       query: 'daily-digest',
     });

@@ -8,9 +8,11 @@ import { MoreHorizontalIcon } from 'lucide-react';
 import { memo, useMemo, useState } from 'react';
 import { useParams } from 'react-router';
 
-import { DEFAULT_AVATAR, DEFAULT_INBOX_AVATAR } from '@/const/meta';
+import { DEFAULT_AVATAR } from '@/const/meta';
 import { type SidebarAgentItem } from '@/database/repositories/home';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useFetchAgentList } from '@/hooks/useFetchAgentList';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
@@ -117,15 +119,17 @@ const useSwitchItems = (): SwitchItem[] => {
   );
   const pinned = useHomeStore(homeAgentListSelectors.pinnedAgents, isEqual);
   const recent = useHomeStore(homeAgentListSelectors.ungroupedAgents, isEqual);
+  const inboxAvatar = useDefaultInboxAvatar(inboxMeta?.avatar);
+  const inboxTitle = useDefaultInboxDisplayName(inboxMeta?.title);
 
   return useMemo(() => {
     const inbox: SwitchItem = {
-      avatar: inboxMeta?.avatar || DEFAULT_INBOX_AVATAR,
+      avatar: inboxAvatar,
       background: inboxMeta?.backgroundColor,
       id: INBOX_SESSION_ID,
       isInbox: true,
       navId: INBOX_SESSION_ID,
-      title: inboxMeta?.title || 'Inbox',
+      title: inboxTitle,
     };
 
     const fromAgent = (a: SidebarAgentItem): SwitchItem => ({
@@ -150,7 +154,7 @@ const useSwitchItems = (): SwitchItem[] => {
       seen.add(item.id);
       return true;
     });
-  }, [inboxMeta, pinned, recent]);
+  }, [inboxAvatar, inboxMeta, inboxTitle, pinned, recent]);
 };
 
 const QuickChatAgentSwitcher = memo(() => {

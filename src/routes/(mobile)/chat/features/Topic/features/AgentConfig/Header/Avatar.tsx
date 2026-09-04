@@ -3,15 +3,18 @@
 import { Avatar, Block } from '@lobehub/ui';
 import { memo } from 'react';
 
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useOpenChatSettings } from '@/hooks/useInterceptingRoutes';
 import { useAgentStore } from '@/store/agent';
-import { agentSelectors } from '@/store/agent/selectors';
+import { agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
 
 const HeaderAvatar = memo(() => {
-  const [avatar, backgroundColor] = useAgentStore((s) => [
+  const [avatar, backgroundColor, isInbox] = useAgentStore((s) => [
     agentSelectors.currentAgentAvatar(s),
     agentSelectors.currentAgentBackgroundColor(s),
+    !!s.activeAgentId && builtinAgentSelectors.inboxAgentId(s) === s.activeAgentId,
   ]);
+  const inboxAvatar = useDefaultInboxAvatar(avatar);
 
   const openChatSettings = useOpenChatSettings();
 
@@ -31,7 +34,7 @@ const HeaderAvatar = memo(() => {
         openChatSettings();
       }}
     >
-      <Avatar avatar={avatar} background={backgroundColor} size={28} />
+      <Avatar avatar={isInbox ? inboxAvatar : avatar} background={backgroundColor} size={28} />
     </Block>
   );
 });

@@ -7,9 +7,10 @@ import React, { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { DESKTOP_HEADER_ICON_SMALL_SIZE } from '@/const/layoutTokens';
-import { DEFAULT_AVATAR, DEFAULT_INBOX_AVATAR } from '@/const/meta';
+import { DEFAULT_AVATAR } from '@/const/meta';
 import { type SidebarAgentItem } from '@/database/repositories/home';
 import { SkeletonItem } from '@/features/NavPanel/components/SkeletonList';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
@@ -72,7 +73,9 @@ const Agent = memo<PropsWithChildren>(() => {
   const backgroundColor = agentData?.backgroundColor ?? listMeta?.backgroundColor ?? undefined;
 
   const inboxDisplayName = useDefaultInboxDisplayName(title);
+  const inboxAvatar = useDefaultInboxAvatar(avatar);
   const displayTitle = isInbox ? inboxDisplayName : title || t('defaultSession', { ns: 'common' });
+  const displayAvatar = isInbox ? inboxAvatar : avatar || DEFAULT_AVATAR;
 
   // Skeleton only while the identity is genuinely unknown. A config fetch error
   // or a known inbox/list identity must render the real chip — otherwise the
@@ -97,7 +100,7 @@ const Agent = memo<PropsWithChildren>(() => {
         }}
       >
         <Avatar
-          avatar={isInbox ? avatar || DEFAULT_INBOX_AVATAR : avatar || DEFAULT_AVATAR}
+          avatar={displayAvatar}
           background={backgroundColor || undefined}
           shape={'square'}
           size={28}

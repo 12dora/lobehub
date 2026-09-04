@@ -27,12 +27,22 @@ describe('runtime favicon', () => {
   });
 
   it.each(['progress', 'done', 'error'] as const)(
-    'keeps the built-in %s boundary favicon instead of masking status',
+    'keeps the Published favicon in the %s state instead of flashing the product icon',
     (state) => {
       const href = resolveFaviconHref(state, false, '/tenant.ico', '7', '32x32', 100);
 
-      expect(href).toBe(`/favicon-32x32-${state}.ico?v=100`);
-      expect(href).not.toContain('tenant');
+      expect(href).toBe('/tenant.ico?runtime_branding_revision=7');
+    },
+  );
+
+  it.each(['default', 'progress', 'done', 'error'] as const)(
+    'falls back to the built-in %s favicon when no brand favicon is published',
+    (state) => {
+      const suffix = state === 'default' ? '' : `-${state}`;
+
+      expect(resolveFaviconHref(state, false, null, null, '32x32', 100)).toBe(
+        `/favicon-32x32${suffix}.ico?v=100`,
+      );
     },
   );
 

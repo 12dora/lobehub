@@ -1,4 +1,4 @@
-import { DEFAULT_AVATAR, INBOX_SESSION_ID } from '@lobechat/const';
+import { DEFAULT_AVATAR } from '@lobechat/const';
 import { ActionIcon, Avatar, Block, Flexbox, Icon, Text } from '@lobehub/ui';
 import { Divider } from 'antd';
 import { cssVar } from 'antd-style';
@@ -6,10 +6,13 @@ import { Check, ChevronDownIcon, ChevronUpIcon } from 'lucide-react';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { DEFAULT_INBOX_AVATAR } from '@/const/meta';
 import { taskDetailPath } from '@/features/AgentTasks/shared/taskDetailPath';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import Time from '@/routes/(main)/home/features/components/Time';
+import { useAgentStore } from '@/store/agent';
+import { builtinAgentSelectors } from '@/store/agent/selectors';
 
 import BriefCardActions from './BriefCardActions';
 import BriefCardArtifacts from './BriefCardArtifacts';
@@ -24,14 +27,18 @@ interface ProducingAgentAvatarProps {
 
 const ProducingAgentAvatar = memo<ProducingAgentAvatarProps>(({ agent }) => {
   const { t } = useTranslation('common');
-  const isInbox = agent.id === INBOX_SESSION_ID;
+  // Briefs carry the database agent id, not the `inbox` builtin key.
+  const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
+  const isInbox = !!inboxAgentId && agent.id === inboxAgentId;
+  const inboxAvatar = useDefaultInboxAvatar(agent.avatar);
+  const inboxTitle = useDefaultInboxDisplayName(agent.title);
   return (
     <Avatar
-      avatar={agent.avatar || (isInbox ? DEFAULT_INBOX_AVATAR : DEFAULT_AVATAR)}
+      avatar={isInbox ? inboxAvatar : agent.avatar || DEFAULT_AVATAR}
       background={agent.backgroundColor || cssVar.colorBgContainer}
       shape={'circle'}
       size={28}
-      title={agent.title || (isInbox ? t('inbox.title', { ns: 'chat' }) : t('defaultSession'))}
+      title={isInbox ? inboxTitle : agent.title || t('defaultSession')}
     />
   );
 });

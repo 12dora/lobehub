@@ -1,6 +1,5 @@
 'use client';
 
-import { DEFAULT_INBOX_AVATAR } from '@lobechat/const';
 import { Avatar, Icon } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
 import { Loader2 } from 'lucide-react';
@@ -9,6 +8,7 @@ import { memo } from 'react';
 
 import NavItem from '@/features/NavPanel/components/NavItem';
 import WorkspaceLink from '@/features/Workspace/WorkspaceLink';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { usePrefetchAgent } from '@/hooks/usePrefetchAgent';
 import { useAgentStore } from '@/store/agent';
@@ -59,7 +59,7 @@ const InboxItem = memo<InboxItemProps>(({ className, style }) => {
   );
   const prefetchAgent = usePrefetchAgent();
   const inboxAgentTitle = useDefaultInboxDisplayName(inboxMeta.title);
-  const inboxAgentAvatar = inboxMeta.avatar || DEFAULT_INBOX_AVATAR;
+  const inboxAgentAvatar = useDefaultInboxAvatar(inboxMeta.avatar);
   const inboxUrl = usePreservedAgentUrl(inboxAgentId!);
 
   // Prefetch agent layout chunk and data eagerly since Lobe AI is almost always clicked

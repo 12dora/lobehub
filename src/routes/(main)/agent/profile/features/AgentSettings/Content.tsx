@@ -6,12 +6,13 @@ import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { shallow } from 'zustand/shallow';
 
-import { DEFAULT_AVATAR, DEFAULT_INBOX_AVATAR } from '@/const/meta';
+import { DEFAULT_AVATAR } from '@/const/meta';
 import {
   AgentSettings as Settings,
   SettingsModalLayout,
   type SettingsModalTabItem,
 } from '@/features/AgentSetting';
+import { useDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { usePermission } from '@/hooks/usePermission';
 import { useAgentStore } from '@/store/agent';
@@ -83,6 +84,7 @@ const Content = memo(() => {
   );
 
   const inboxDisplayName = useDefaultInboxDisplayName(meta.title);
+  const inboxAvatar = useDefaultInboxAvatar(meta.avatar);
   const displayTitle = isInbox
     ? inboxDisplayName
     : meta.title || t('defaultSession', { ns: 'common' });
@@ -90,7 +92,7 @@ const Content = memo(() => {
   return (
     <SettingsModalLayout
       activeTab={activeTab}
-      avatar={isInbox ? DEFAULT_INBOX_AVATAR : meta.avatar || DEFAULT_AVATAR}
+      avatar={isInbox ? inboxAvatar : meta.avatar || DEFAULT_AVATAR}
       background={meta.backgroundColor || undefined}
       tabs={tabs}
       title={displayTitle}

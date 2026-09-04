@@ -25,8 +25,13 @@ import { memo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { type SearchResult } from '@/database/repositories/search';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useCommandMenuContext } from '@/features/CommandMenu/CommandMenuContext';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
+import { resolveDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
+import { resolveDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
+import { useAgentStore } from '@/store/agent';
+import { builtinAgentSelectors } from '@/store/agent/selectors';
 import { useImageStore } from '@/store/image';
 import { generationTopicSelectors as imageGenerationTopicSelectors } from '@/store/image/slices/generationTopic/selectors';
 import { useVideoStore } from '@/store/video';
@@ -63,6 +68,8 @@ const SearchResults = memo<SearchResultsProps>(
     const { t: tVideo } = useTranslation('video');
     const navigate = useWorkspaceAwareNavigate();
     const { menuContext } = useCommandMenuContext();
+    const branding = useBranding();
+    const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
     const imageTopics = useImageStore(imageGenerationTopicSelectors.generationTopics);
     const activeImageTopicId = useImageStore((s) => s.activeGenerationTopicId);
     const videoTopics = useVideoStore(videoGenerationTopicSelectors.generationTopics);
@@ -263,14 +270,23 @@ const SearchResults = memo<SearchResultsProps>(
         if (!result.agent) {
           return description ? `${description} · ${formattedDate}` : formattedDate;
         }
+        // Topics owned by the scope's inbox follow the runtime brand.
+        const isInbox = !!result.agentId && result.agentId === inboxAgentId;
+        const agentAvatar = isInbox
+          ? resolveDefaultInboxAvatar(branding, result.agent.avatar)
+          : result.agent.avatar || DEFAULT_AVATAR;
+        const agentTitle = isInbox
+          ? resolveDefaultInboxDisplayName(result.agent.title, branding)
+          : result.agent.title || t('defaultAgent');
+
         return (
           <Flexbox horizontal align="center" gap={6} style={{ minWidth: 0 }}>
             <Avatar
-              avatar={result.agent.avatar || DEFAULT_AVATAR}
+              avatar={agentAvatar}
               background={result.agent.backgroundColor || undefined}
               size={14}
             />
-            <span style={{ flex: 'none' }}>{result.agent.title || t('defaultAgent')}</span>
+            <span style={{ flex: 'none' }}>{agentTitle}</span>
             <span style={{ flex: 'none' }}>·</span>
             <span style={{ flex: 'none' }}>{formattedDate}</span>
             {description && (

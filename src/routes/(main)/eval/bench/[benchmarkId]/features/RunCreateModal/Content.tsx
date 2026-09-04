@@ -1,6 +1,6 @@
 'use client';
 
-import { AGENT_PROFILE_URL, DEFAULT_INBOX_AVATAR, INBOX_SESSION_ID } from '@lobechat/const';
+import { AGENT_PROFILE_URL, INBOX_SESSION_ID } from '@lobechat/const';
 import { Accordion, AccordionItem, ActionIcon, Avatar, Flexbox, Text } from '@lobehub/ui';
 import { Select, useModalContext } from '@lobehub/ui/base-ui';
 import { Form, Input, InputNumber, Space } from 'antd';
@@ -10,6 +10,8 @@ import { type FC, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
+import { useScopedDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
+import { useScopedDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { agentService } from '@/services/agent';
 import { useEvalStore } from '@/store/eval';
 
@@ -74,7 +76,6 @@ const RunCreateContent: FC<RunCreateContentProps> = ({
   onSubmitReady,
 }) => {
   const { t } = useTranslation('eval');
-  const { t: tChat } = useTranslation('chat');
   const { close } = useModalContext();
   const navigate = useWorkspaceAwareNavigate();
   const createRun = useEvalStore((s) => s.createRun);
@@ -87,6 +88,8 @@ const RunCreateContent: FC<RunCreateContentProps> = ({
 
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [loadingAgents, setLoadingAgents] = useState(false);
+  const inboxAvatar = useScopedDefaultInboxAvatar();
+  const inboxDisplayName = useScopedDefaultInboxDisplayName();
 
   useEffect(() => {
     setLoadingAgents(true);
@@ -104,11 +107,11 @@ const RunCreateContent: FC<RunCreateContentProps> = ({
 
   const inboxAgent: AgentOption = useMemo(
     () => ({
-      avatar: DEFAULT_INBOX_AVATAR,
+      avatar: inboxAvatar,
       id: INBOX_SESSION_ID,
-      title: tChat('inbox.title'),
+      title: inboxDisplayName,
     }),
-    [tChat],
+    [inboxAvatar, inboxDisplayName],
   );
 
   const allAgents = useMemo(() => [inboxAgent, ...agents], [inboxAgent, agents]);

@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import AsyncBoundary from '@/components/AsyncBoundary';
 import ImperativeModal from '@/components/ImperativeModal';
 import { DEFAULT_AVATAR } from '@/const/meta';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import {
   statsFilterParams,
   useStatsDataSource,
@@ -16,6 +17,8 @@ import {
   useStatsSwrKey,
 } from '@/features/SettingsStats';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
+import { resolveDefaultInboxAvatar } from '@/hooks/useDefaultInboxAvatar';
+import { resolveDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import Link from '@/libs/router/Link';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
@@ -30,6 +33,7 @@ export const AssistantsRank = memo<{ mobile?: boolean }>(({ mobile }) => {
   const { t } = useTranslation(['auth', 'chat']);
   const navigate = useWorkspaceAwareNavigate();
   const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
+  const branding = useBranding();
   const { rankAgents } = useStatsDataSource();
   const params = statsFilterParams(useStatsFilter());
   const swrKey = useStatsSwrKey(statsKeys.rankAgents());
@@ -40,6 +44,10 @@ export const AssistantsRank = memo<{ mobile?: boolean }>(({ mobile }) => {
   const showExtra = Boolean(data && data?.length > 5);
 
   const mapData = (item: AgentRankItem) => {
+    // Only the viewer's own inbox can be recognised here: `AgentRankItem` carries no
+    // `isInbox` flag, so other users' inbox rows in an admin-scoped ranking keep their
+    // stored avatar/title instead of the runtime brand. Fixing that needs a server-side
+    // flag on the ranking payload.
     const isInbox = item.id === inboxAgentId;
     const path = AGENT_CHAT_URL(item.id, mobile);
     const link = mobile
@@ -50,16 +58,20 @@ export const AssistantsRank = memo<{ mobile?: boolean }>(({ mobile }) => {
       icon: (
         <Avatar
           alt={item.title || t('defaultAgent', { ns: 'chat' })}
-          avatar={item.avatar || DEFAULT_AVATAR}
           background={item.backgroundColor || undefined}
           size={20}
+          avatar={
+            isInbox
+              ? resolveDefaultInboxAvatar(branding, item.avatar)
+              : item.avatar || DEFAULT_AVATAR
+          }
         />
       ),
       link,
       name: (
         <Link href={link} style={{ color: 'inherit' }}>
           {isInbox
-            ? t('inbox.title', { ns: 'chat' })
+            ? resolveDefaultInboxDisplayName(item.title, branding)
             : item.title || t('defaultAgent', { ns: 'chat' })}
         </Link>
       ),
