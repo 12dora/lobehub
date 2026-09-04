@@ -246,6 +246,7 @@ describe('PlatformAgentCatalogRepository', () => {
       versionId: firstVersion!.id,
     });
     expect(published).toMatchObject({
+      currentVersion: '1.0.0',
       currentVersionId: firstVersion!.id,
       draftSequence: 2,
       revision: 1,
@@ -260,6 +261,43 @@ describe('PlatformAgentCatalogRepository', () => {
         versionId: firstVersion!.id,
       }),
     ).toBeUndefined();
+  });
+
+  it('backfills an empty current_version label from the published version row', async () => {
+    const agent = await repository.createIdentity({
+      agentKey: 'backfill-version-label',
+      isDefault: false,
+      systemKey: null,
+    });
+    const version = await repository.appendVersionCas({
+      agentId: agent.id,
+      config,
+      dependencySnapshot,
+      expectedDraftSequence: 0,
+      expectedRevision: 0,
+      version: '1.2.3',
+    });
+    const published = await repository.pointToVersionCas({
+      agentId: agent.id,
+      expectedDraftSequence: 1,
+      expectedRevision: 0,
+      publishedAt: new Date('2026-07-17T00:00:00Z'),
+      versionId: version!.id,
+    });
+    expect(published?.currentVersion).toBe('1.2.3');
+
+    await serverDB
+      .update(platformAgents)
+      .set({ currentVersion: '' })
+      .where(eq(platformAgents.id, agent.id));
+    const emptied = await repository.getIdentity(agent.id);
+    const backfilled = await repository.backfillEmptyCurrentVersionLabel(emptied!);
+    expect(backfilled?.currentVersion).toBe('1.2.3');
+    expect(backfilled?.currentVersionId).toBe(version!.id);
+    expect(backfilled?.draftSequence).toBe(emptied?.draftSequence);
+    expect(backfilled?.revision).toBe(emptied?.revision);
+
+    await expect(repository.backfillEmptyCurrentVersionLabel(backfilled!)).resolves.toBeUndefined();
   });
 
   it('keeps Draft identity writes behind two-dimensional CAS', async () => {
@@ -361,7 +399,8 @@ describe('PlatformAgentCatalogRepository', () => {
     }
     expect(inputs[0]).toMatchObject({
       assignment: { id: userAssignment.id },
-      version: { id: version2!.id },
+      // Legacy pinned rows still resolve to the identity's current published version.
+      version: { id: version1!.id },
     });
     expect(inputs[1]?.version.id).toBe(version1!.id);
     expect(

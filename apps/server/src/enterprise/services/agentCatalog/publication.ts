@@ -170,7 +170,7 @@ export const nextPlatformAgentVersion = (existing: readonly string[]): string =>
 export const appendAndPublishPlatformAgentVersion = async (
   tx: Transaction,
   params: {
-    actorUserId: string;
+    actorUserId: string | null;
     config: ExactPlatformAgentVersion['config'];
     dependencySnapshot: ExactPlatformAgentVersion['dependencySnapshot'];
     /** Locked identity row (`SELECT … FOR UPDATE`). */

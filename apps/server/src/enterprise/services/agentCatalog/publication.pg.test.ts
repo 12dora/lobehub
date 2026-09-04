@@ -307,6 +307,7 @@ run('de-drafted platform Agent write (PostgreSQL)', () => {
       );
       expect(saved.version.version).toBe('1.0.1');
       expect(await versionLabels('label-agent')).toEqual(['1.0.0', '1.0.1', 'legacy-snapshot']);
+      expect((await currentIdentity('label-agent')).currentVersion).toBe('1.0.1');
     });
 
     it('parks the next label in the 0.0.x family when no existing label is valid SemVer', async () => {

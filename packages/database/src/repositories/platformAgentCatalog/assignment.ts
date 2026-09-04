@@ -476,11 +476,8 @@ export class PlatformAgentAssignmentRepository extends PlatformAgentIdentityRepo
     userId: string,
     filter?: { limit?: number; platformAgentId?: string; systemKey?: string },
   ): Promise<PlatformAgentEffectiveInput[]> => {
-    const effectiveVersionId = sql<string>`CASE
-      WHEN ${platformAgentAssignments.versionPolicy} = 'pinned'
-        THEN ${platformAgentAssignments.pinnedVersionId}
-      ELSE ${platformAgents.currentVersionId}
-    END`;
+    // Assignments always follow the identity's current published version — ignore legacy pins.
+    const effectiveVersionId = platformAgents.currentVersionId;
     const query = this.db
       .select({
         agent: platformAgents,

@@ -8,19 +8,6 @@ import { z } from 'zod';
 
 import { idSchema } from './common';
 
-/**
- * Shared assignment shape fields (without identity / CAS / reason).
- * Used by upsert, preview, and output projections.
- */
-export const platformAgentAssignmentCoreFields = {
-  enabled: z.boolean(),
-  mode: z.enum(PLATFORM_AGENT_ASSIGNMENT_MODES),
-  pinnedVersionId: idSchema.nullable(),
-  targetId: idSchema,
-  targetType: z.enum(PLATFORM_AGENT_ASSIGNMENT_TARGET_TYPES),
-  versionPolicy: z.enum(PLATFORM_AGENT_VERSION_POLICIES),
-} as const;
-
 export type PlatformAgentAssignmentCore = {
   enabled: boolean;
   mode: (typeof PLATFORM_AGENT_ASSIGNMENT_MODES)[number];
@@ -29,6 +16,35 @@ export type PlatformAgentAssignmentCore = {
   targetType: (typeof PLATFORM_AGENT_ASSIGNMENT_TARGET_TYPES)[number];
   versionPolicy: (typeof PLATFORM_AGENT_VERSION_POLICIES)[number];
 };
+
+/**
+ * Shared assignment shape fields (without identity / CAS / reason).
+ * Used by upsert, preview, and output projections.
+ *
+ * `pinnedVersionId` / `versionPolicy` stay on the wire for older clients. Platform agents have
+ * no version management: every write follows the latest published version, so those fields are
+ * accepted then ignored (canonicalized to `latest_published` + `null`).
+ */
+export const PLATFORM_AGENT_ASSIGNMENT_LATEST_PUBLISHED = {
+  pinnedVersionId: null,
+  versionPolicy: 'latest_published',
+} as const satisfies Pick<PlatformAgentAssignmentCore, 'pinnedVersionId' | 'versionPolicy'>;
+
+export const withLatestPublishedAssignmentVersion = <T extends object>(
+  assignment: T,
+): T & typeof PLATFORM_AGENT_ASSIGNMENT_LATEST_PUBLISHED => ({
+  ...assignment,
+  ...PLATFORM_AGENT_ASSIGNMENT_LATEST_PUBLISHED,
+});
+
+export const platformAgentAssignmentCoreFields = {
+  enabled: z.boolean(),
+  mode: z.enum(PLATFORM_AGENT_ASSIGNMENT_MODES),
+  pinnedVersionId: idSchema.nullable(),
+  targetId: idSchema,
+  targetType: z.enum(PLATFORM_AGENT_ASSIGNMENT_TARGET_TYPES),
+  versionPolicy: z.enum(PLATFORM_AGENT_VERSION_POLICIES),
+} as const;
 
 /** Global target pairing + pinned-version pairing — single source of truth. */
 export const refinePlatformAgentAssignmentInvariants = (
@@ -52,4 +68,5 @@ export const refinePlatformAgentAssignmentInvariants = (
 export const platformAgentAssignmentCoreSchema = z
   .object(platformAgentAssignmentCoreFields)
   .strict()
-  .superRefine(refinePlatformAgentAssignmentInvariants);
+  .superRefine(refinePlatformAgentAssignmentInvariants)
+  .transform(withLatestPublishedAssignmentVersion);

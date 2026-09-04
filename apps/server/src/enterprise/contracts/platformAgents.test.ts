@@ -32,6 +32,7 @@ import {
   platformAgentIdentityDraftSchema,
   platformAgentImmutableVersionSchema,
   platformAgentRolloutProjectionSchema,
+  platformAgentVersionConfigSchema,
 } from './platformAgents';
 
 const checksum = 'a'.repeat(64);
@@ -206,6 +207,33 @@ describe('platform Agent contracts', () => {
     expect(platformAgentImmutableVersionSchema.safeParse(version).success).toBe(true);
     expect(
       platformAgentImmutableVersionSchema.safeParse({ ...version, encryptedCredentials: 'x' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('allows an empty systemRole and still bounds its length', () => {
+    const emptyRole = { ...config, systemRole: '' };
+    expect(platformAgentVersionConfigSchema.safeParse(emptyRole).success).toBe(true);
+    expect(
+      platformAgentImmutableVersionSchema.safeParse({ ...version, config: emptyRole }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentSaveInputSchema.safeParse({
+        agentId: 'agent-id',
+        config: emptyRole,
+        dependencySnapshot,
+        expectedDraftToken: 'b'.repeat(64),
+        expectedRevision: 0,
+      }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentVersionsListOutputSchema.safeParse({
+        items: [{ ...version, config: emptyRole }],
+        nextCursor: null,
+      }).success,
+    ).toBe(true);
+    expect(
+      platformAgentVersionConfigSchema.safeParse({ ...config, systemRole: 'x'.repeat(100_001) })
         .success,
     ).toBe(false);
   });
@@ -470,7 +498,8 @@ describe('platform Agent contracts', () => {
       parseOutput({ ...core, targetId: PLATFORM_AGENT_GLOBAL_TARGET_ID, targetType: 'user' }),
     ).toBe(false);
 
-    // Pinned policy requires a version id on every derived schema.
+    // Pinned policy requires a version id on every derived schema. Write schemas then
+    // canonicalize to latest_published; output still round-trips legacy pinned rows.
     const pinned = {
       ...core,
       pinnedVersionId: 'version-id',
@@ -479,6 +508,31 @@ describe('platform Agent contracts', () => {
     expect(parseUpsert({ ...write, ...pinned })).toBe(true);
     expect(parsePreview(pinned)).toBe(true);
     expect(parseOutput(pinned)).toBe(true);
+    expect(
+      adminPlatformAgentAssignmentUpsertInputSchema.parse({ ...write, ...pinned }),
+    ).toMatchObject({
+      pinnedVersionId: null,
+      versionPolicy: 'latest_published',
+    });
+    expect(
+      adminPlatformAgentAssignmentPreviewInputSchema.parse({
+        agentId: 'agent-id',
+        assignment: pinned,
+      }).assignment,
+    ).toMatchObject({
+      pinnedVersionId: null,
+      versionPolicy: 'latest_published',
+    });
+    expect(
+      platformAgentAssignmentSchema.parse({
+        agentId: 'agent-id',
+        id: 'assignment-id',
+        ...pinned,
+      }),
+    ).toMatchObject({
+      pinnedVersionId: 'version-id',
+      versionPolicy: 'pinned',
+    });
 
     const pinnedWithoutVersion = {
       ...core,

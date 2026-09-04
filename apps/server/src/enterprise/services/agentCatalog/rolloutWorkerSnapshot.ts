@@ -30,17 +30,8 @@ export const assignmentMatchesSnapshot = (
   if (assignment.status !== 'active') return false;
   if (assignment.targetType !== snapshot.targetType) return false;
   if (assignment.targetId !== snapshot.targetId) return false;
-  if (assignment.versionPolicy !== snapshot.versionPolicy) return false;
-  if (
-    snapshot.versionPolicy === 'pinned' &&
-    assignment.pinnedVersionId !== snapshot.targetVersionId
-  )
-    return false;
-  if (
-    snapshot.versionPolicy === 'latest_published' &&
-    identity.currentVersionId !== snapshot.targetVersionId
-  )
-    return false;
+  // Always follow the identity's current published version — ignore legacy pins.
+  if (identity.currentVersionId !== snapshot.targetVersionId) return false;
   return true;
 };
 

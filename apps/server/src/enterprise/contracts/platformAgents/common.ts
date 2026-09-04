@@ -77,7 +77,8 @@ export const platformAgentVersionConfigSchema = z
     modelParameters: platformAgentModelParametersSchema,
     openingMessage: safeText(8000, 1).nullable(),
     openingQuestions: uniqueStringsSchema(safeText(1000, 1), 50),
-    systemRole: safeText(100_000, 1),
+    // Empty is valid: the legacy inbox default is `""`, and admins may publish no prompt.
+    systemRole: safeText(100_000),
     tags: uniqueStringsSchema(safeText(100, 1), 50),
   })
   .strict();

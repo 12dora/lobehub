@@ -208,6 +208,7 @@ run('PlatformAgentAdminService (PostgreSQL) — list / archive / queries', () =>
           .from(platformAgents)
           .where(eq(platformAgents.agentKey, 'default-inbox'));
         expect(identities).toHaveLength(1);
+        expect(identities[0]?.currentVersion).toBe('1.0.0');
         const versions = await db
           .select()
           .from(platformAgentVersions)
@@ -227,6 +228,37 @@ run('PlatformAgentAdminService (PostgreSQL) — list / archive / queries', () =>
         await Promise.all([firstPool.end(), secondPool.end()]);
       }
     }, 20_000);
+  });
+
+  describe('default-inbox current_version repair', () => {
+    it('backfills an empty current_version from the published version row', async () => {
+      const versionId = await seedPublishedAgent('inbox-agent', 'default-inbox');
+      await db
+        .update(platformAgents)
+        .set({
+          currentVersion: '',
+          isDefault: true,
+          systemKey: 'default-inbox',
+        })
+        .where(eq(platformAgents.id, 'inbox-agent'));
+      await db.insert(platformAgentAssignments).values({
+        agentId: 'inbox-agent',
+        enabled: true,
+        mode: 'default',
+        status: 'active',
+        targetId: '__global__',
+        targetType: 'global',
+        versionPolicy: 'latest_published',
+      });
+
+      await new PlatformAgentAdminService(db, {
+        validateDependencies: async () => undefined,
+      }).provisionDefaultInbox({ actorId: 'admin' });
+
+      const row = await currentIdentity('inbox-agent');
+      expect(row.currentVersion).toBe('1.0.0');
+      expect(row.currentVersionId).toBe(versionId);
+    });
   });
 
   // ADM-05: a held `FOR UPDATE` on the default row blocks the next reader until commit.

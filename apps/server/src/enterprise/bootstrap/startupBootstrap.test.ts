@@ -6,8 +6,10 @@ import type { LobeChatDatabase } from '@/database/type';
 const mocks = vi.hoisted(() => ({
   bootstrapSuperAdmin: vi.fn(),
   ensureAgentTemplateCatalogSeeded: vi.fn(),
+  ensureDefaultInboxProvisioned: vi.fn(),
   ensurePlatformRbacSeeded: vi.fn(),
   ensureTaskTemplateCatalogSeeded: vi.fn(),
+  getServerDB: vi.fn(),
 }));
 
 vi.mock('./superAdmin', () => ({
@@ -18,6 +20,15 @@ vi.mock('./superAdmin', () => ({
 vi.mock('../services/templateCatalogBootstrap', () => ({
   ensureAgentTemplateCatalogSeeded: mocks.ensureAgentTemplateCatalogSeeded,
   ensureTaskTemplateCatalogSeeded: mocks.ensureTaskTemplateCatalogSeeded,
+}));
+
+vi.mock('../services/agentCatalog/adminService', () => ({
+  DEFAULT_INBOX_BOOTSTRAP_ACTOR: null,
+  ensureDefaultInboxProvisioned: mocks.ensureDefaultInboxProvisioned,
+}));
+
+vi.mock('@/database/core/db-adaptor', () => ({
+  getServerDB: mocks.getServerDB,
 }));
 
 const {
@@ -42,7 +53,9 @@ beforeEach(() => {
   resetPlatformBootstrapForTest();
   mocks.ensurePlatformRbacSeeded.mockResolvedValue({ superAdminCount: 0 });
   mocks.ensureAgentTemplateCatalogSeeded.mockResolvedValue(undefined);
+  mocks.ensureDefaultInboxProvisioned.mockResolvedValue(undefined);
   mocks.ensureTaskTemplateCatalogSeeded.mockResolvedValue(undefined);
+  mocks.getServerDB.mockResolvedValue(db);
   mocks.bootstrapSuperAdmin.mockReset();
   infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -53,7 +66,9 @@ afterEach(() => {
   vi.restoreAllMocks();
   mocks.ensurePlatformRbacSeeded.mockReset();
   mocks.ensureAgentTemplateCatalogSeeded.mockReset();
+  mocks.ensureDefaultInboxProvisioned.mockReset();
   mocks.ensureTaskTemplateCatalogSeeded.mockReset();
+  mocks.getServerDB.mockReset();
 });
 
 describe('runStartupPlatformBootstrap', () => {
@@ -66,6 +81,7 @@ describe('runStartupPlatformBootstrap', () => {
     expect(mocks.ensurePlatformRbacSeeded).toHaveBeenCalledWith(db);
     expect(mocks.ensureAgentTemplateCatalogSeeded).toHaveBeenCalledWith(db);
     expect(mocks.ensureTaskTemplateCatalogSeeded).toHaveBeenCalledWith(db);
+    expect(mocks.ensureDefaultInboxProvisioned).not.toHaveBeenCalled();
     expect(mocks.bootstrapSuperAdmin).not.toHaveBeenCalled();
   });
 
@@ -182,15 +198,60 @@ describe('runStartupPlatformBootstrap', () => {
 });
 
 describe('bootstrapPlatformAdminRuntime', () => {
-  it('does nothing when the platform admin flag is off', async () => {
+  it('does nothing when the platform admin flag and managed agents are both off', async () => {
     const outcome = await bootstrapPlatformAdminRuntime({
       DATABASE_URL: 'postgresql://x',
       ENABLE_PLATFORM_ADMIN: '0',
+      ENABLE_PLATFORM_MANAGED_AGENTS: '0',
     });
 
     expect(outcome).toEqual({ reason: 'platform-admin-disabled', status: 'skipped' });
+    expect(mocks.getServerDB).not.toHaveBeenCalled();
     expect(mocks.ensurePlatformRbacSeeded).not.toHaveBeenCalled();
     expect(mocks.ensureAgentTemplateCatalogSeeded).not.toHaveBeenCalled();
+    expect(mocks.ensureDefaultInboxProvisioned).not.toHaveBeenCalled();
+  });
+
+  it('provisions the default inbox when admin is off and managed agents is on', async () => {
+    const outcome = await bootstrapPlatformAdminRuntime({
+      DATABASE_URL: 'postgresql://x',
+      DEFAULT_LANG: 'zh-CN',
+      ENABLE_PLATFORM_ADMIN: '0',
+      ENABLE_PLATFORM_MANAGED_AGENTS: '1',
+    });
+
+    expect(outcome).toEqual({ status: 'seeded', superAdminCount: 0 });
+    expect(mocks.getServerDB).toHaveBeenCalled();
+    expect(mocks.ensurePlatformRbacSeeded).not.toHaveBeenCalled();
+    expect(mocks.ensureAgentTemplateCatalogSeeded).not.toHaveBeenCalled();
+    expect(mocks.ensureTaskTemplateCatalogSeeded).not.toHaveBeenCalled();
+    expect(mocks.ensureDefaultInboxProvisioned).toHaveBeenCalledTimes(1);
+    expect(mocks.ensureDefaultInboxProvisioned).toHaveBeenCalledWith(db, { locale: 'zh-CN' });
+  });
+
+  it('runs managed-agents provision after admin template seeding', async () => {
+    const outcome = await bootstrapPlatformAdminRuntime({
+      ...baseEnv,
+      ENABLE_PLATFORM_MANAGED_AGENTS: '1',
+    });
+
+    expect(outcome).toEqual({ status: 'seeded', superAdminCount: 0 });
+    expect(mocks.ensureAgentTemplateCatalogSeeded).toHaveBeenCalledWith(db);
+    expect(mocks.ensureAgentTemplateCatalogSeeded).toHaveBeenCalledBefore(
+      mocks.ensureDefaultInboxProvisioned,
+    );
+    expect(mocks.ensureDefaultInboxProvisioned).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips default-inbox provision when the managed-agents module is disabled', async () => {
+    const outcome = await bootstrapPlatformAdminRuntime({
+      ...baseEnv,
+      ENABLE_PLATFORM_MANAGED_AGENTS: '0',
+    });
+
+    expect(outcome).toEqual({ status: 'seeded', superAdminCount: 0 });
+    expect(mocks.ensurePlatformRbacSeeded).toHaveBeenCalled();
+    expect(mocks.ensureDefaultInboxProvisioned).not.toHaveBeenCalled();
   });
 
   it('accepts the ENABLE_ENTERPRISE_ADMIN alias but still needs a database URL', async () => {
@@ -214,6 +275,7 @@ describe('bootstrapPlatformAdminRuntime', () => {
     const first = await bootstrapPlatformAdminRuntime({
       DATABASE_URL: 'postgresql://x',
       ENABLE_PLATFORM_ADMIN: '0',
+      ENABLE_PLATFORM_MANAGED_AGENTS: '0',
     });
     const second = await bootstrapPlatformAdminRuntime({ ...baseEnv });
 

@@ -416,10 +416,7 @@ export class PlatformAgentRolloutService {
         if (!assignment || !assignment.enabled || assignment.status !== 'active') {
           throw new PlatformAgentNotFoundError();
         }
-        const targetVersionId =
-          assignment.versionPolicy === 'pinned'
-            ? assignment.pinnedVersionId
-            : identity.currentVersionId;
+        const targetVersionId = identity.currentVersionId;
         if (!targetVersionId) throw new PlatformAgentInvalidInputError();
         const target = await repository.getExactVersion(identity.id, targetVersionId);
         if (!target) throw new PlatformAgentNotFoundError();
@@ -472,7 +469,7 @@ export class PlatformAgentRolloutService {
               targetType: assignment.targetType,
               targetVersionChecksum: target.checksum,
               targetVersionId: target.id,
-              versionPolicy: assignment.versionPolicy,
+              versionPolicy: 'latest_published',
             },
           },
           progressTotal,

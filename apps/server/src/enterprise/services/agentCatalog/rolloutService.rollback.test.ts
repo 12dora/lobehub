@@ -123,7 +123,7 @@ describe('PlatformAgentRolloutService rollback plane', () => {
     ).resolves.toMatchObject({ previousVersionId: 'version-3', status: 'completed' });
   });
 
-  it('rolls a pinned assignment back without changing the Agent latest pointer', async () => {
+  it('rolls a legacy pinned assignment back via the Agent latest pointer', async () => {
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
     await seedMaterializations();
     await db
@@ -141,14 +141,15 @@ describe('PlatformAgentRolloutService rollback plane', () => {
       expectedJobRevision: completed.revision,
       expectedStatus: 'completed',
       jobId: completed.jobId,
-      reason: 'pin V1 again',
+      reason: 'return to V1',
       targetVersionId: 'version-1',
     });
 
     const [identity] = await db.select().from(platformAgents);
     const [assignment] = await db.select().from(platformAgentAssignments);
-    expect(identity.currentVersionId).toBe('version-2');
-    expect(assignment.pinnedVersionId).toBe('version-1');
+    expect(identity.currentVersionId).toBe('version-1');
+    expect(assignment.pinnedVersionId).toBe('version-2');
+    expect(assignment.versionPolicy).toBe('pinned');
   });
 
   it('does not fabricate one rollback pointer for mixed per-user transition history', async () => {

@@ -4,15 +4,18 @@ import {
   platformAgentAssignmentCoreFields,
   platformAgentAssignmentCoreSchema,
   refinePlatformAgentAssignmentInvariants,
+  withLatestPublishedAssignmentVersion,
 } from './assignmentCore';
 import { draftTokenSchema, idSchema, optionalReasonSchema, revisionSchema } from './common';
 import { platformAgentAssignmentSchema, platformAgentIdentityDraftSchema } from './domain';
 
 export {
+  PLATFORM_AGENT_ASSIGNMENT_LATEST_PUBLISHED,
   type PlatformAgentAssignmentCore,
   platformAgentAssignmentCoreFields,
   platformAgentAssignmentCoreSchema,
   refinePlatformAgentAssignmentInvariants,
+  withLatestPublishedAssignmentVersion,
 } from './assignmentCore';
 
 export const adminPlatformAgentAssignmentListInputSchema = z
@@ -40,7 +43,8 @@ export const adminPlatformAgentAssignmentUpsertInputSchema = z
     ...platformAgentAssignmentCoreFields,
   })
   .strict()
-  .superRefine(refinePlatformAgentAssignmentInvariants);
+  .superRefine(refinePlatformAgentAssignmentInvariants)
+  .transform(withLatestPublishedAssignmentVersion);
 
 export const adminPlatformAgentAssignmentRemoveInputSchema = z
   .object({

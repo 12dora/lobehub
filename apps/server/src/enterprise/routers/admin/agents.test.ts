@@ -210,7 +210,9 @@ describe('adminAgentsRouter security gates', () => {
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
     const reader = await callerFor({ authenticatedAt: new Date(), userId: ids.reader });
-    await expect(reader.list({ limit: 10 })).resolves.toEqual({ items: [], nextCursor: null });
+    const listed = await reader.list({ limit: 10 });
+    expect(listed.nextCursor).toBeNull();
+    expect(listed.items.map(({ identity }) => identity.agentKey)).toEqual(['default-inbox']);
     await expect(reader.rollouts.list({ agentId: 'missing-agent', limit: 10 })).resolves.toEqual({
       items: [],
       nextCursor: null,
@@ -778,6 +780,12 @@ describe('adminAgentsRouter provisionDefaultInbox', () => {
     const second = await provisioner.provisionDefaultInbox();
     expect(second.identity.id).toBe(first.identity.id);
 
+    const [identityRow] = await db
+      .select({ currentVersion: platformAgents.currentVersion })
+      .from(platformAgents)
+      .where(eq(platformAgents.id, first.identity.id));
+    expect(identityRow?.currentVersion).toBe('1.0.0');
+
     const listed = await (
       await callerFor({ authenticatedAt: new Date(), userId: ids.reader })
     ).list({ isDefault: true, limit: 10 });
@@ -866,5 +874,48 @@ describe('adminAgentsRouter provisionDefaultInbox', () => {
         versionPolicy: 'latest_published',
       }),
     ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('ensures the default inbox exists before listing', async () => {
+    const reader = await callerFor({ authenticatedAt: new Date(), userId: ids.reader });
+    const listed = await reader.list({ isDefault: true, limit: 10 });
+    expect(listed.items).toHaveLength(1);
+    expect(listed.items[0]?.identity).toMatchObject({
+      agentKey: 'default-inbox',
+      isDefault: true,
+      systemKey: 'default-inbox',
+    });
+    const again = await reader.list({ isDefault: true, limit: 10 });
+    expect(again.items).toHaveLength(1);
+    expect(again.items[0]?.identity.id).toBe(listed.items[0]?.identity.id);
+  });
+
+  it('lists, loads, and saves a provisioned default whose systemRole is empty', async () => {
+    const provisioner = await callerFor({ authenticatedAt: new Date(), userId: ids.provisioner });
+    const first = await provisioner.provisionDefaultInbox();
+    const reader = await callerFor({ authenticatedAt: new Date(), userId: ids.reader });
+
+    const versions = await reader.listVersions({ agentId: first.identity.id });
+    expect(versions.items[0]?.config.systemRole).toBe('');
+    await expect(reader.get({ id: first.identity.id })).resolves.toMatchObject({
+      identity: { id: first.identity.id, systemKey: 'default-inbox' },
+    });
+
+    const editor = await callerFor({ authenticatedAt: new Date(), userId: ids.editor });
+    const saved = await editor.save({
+      agentId: first.identity.id,
+      config: { ...versions.items[0]!.config, systemRole: '' },
+      dependencySnapshot: versions.items[0]!.dependencySnapshot,
+      expectedDraftToken: first.draftToken,
+      expectedRevision: first.identity.revision,
+    });
+    expect(saved.version.config.systemRole).toBe('');
+    expect(saved.identity.currentVersionId).toBe(saved.version.id);
+
+    const [identityRow] = await db
+      .select({ currentVersion: platformAgents.currentVersion })
+      .from(platformAgents)
+      .where(eq(platformAgents.id, first.identity.id));
+    expect(identityRow?.currentVersion).toBe(saved.version.version);
   });
 });

@@ -3,7 +3,7 @@
  * `superAdmin.ts` script, so a Docker-only deployer never needs a repo checkout.
  *
  * Runs from the Next.js `instrumentation.register()` hook (the same place the
- * identity-provider runtime boots) and does two idempotent things:
+ * identity-provider runtime boots) and does the following idempotent work:
  *
  *  1. `ensurePlatformRbacSeeded` — upserts every `platform_*` permission code and
  *     re-syncs the system-role → permission mappings. This is what makes
@@ -14,9 +14,14 @@
  *     the CLI script accepts. Promotes an existing user, or (with
  *     `BOOTSTRAP_ALLOW_CREATE=1`) creates a local break-glass account and prints
  *     the generated one-time password exactly once.
+ *  4. Independent managed-agents default-inbox provision. Runs after template
+ *     seeding when the admin bootstrap ran, and still runs when the admin console
+ *     is off but `ENABLE_PLATFORM_MANAGED_AGENTS` is on.
  *
  * Safety rules:
- *  - never runs when `ENABLE_PLATFORM_ADMIN` (alias `ENABLE_ENTERPRISE_ADMIN`) is off;
+ *  - the admin-console half (RBAC / templates / super-admin) never runs when
+ *    `ENABLE_PLATFORM_ADMIN` (alias `ENABLE_ENTERPRISE_ADMIN`) is off;
+ *  - managed-agents provision is not gated on the admin console;
  *  - never runs during `next build`;
  *  - never throws — a failure is logged and the server keeps booting;
  *  - idempotent across restarts: the second boot finds the user and reports
@@ -27,6 +32,7 @@ import { PHASE_PRODUCTION_BUILD } from 'next/constants';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
+import { ensureDefaultInboxProvisioned } from '../services/agentCatalog/adminService';
 import {
   ensureAgentTemplateCatalogSeeded,
   ensureTaskTemplateCatalogSeeded,
@@ -143,6 +149,19 @@ export const runStartupPlatformBootstrap = async (
   }
 };
 
+/**
+ * Independent managed-agents bootstrap: default-inbox provision. Not gated on the
+ * admin console. Callers must already have a post-migration database handle; when
+ * the admin bootstrap ran, this runs after template seeding.
+ */
+const runManagedAgentsStartupBootstrap = async (
+  db: LobeChatDatabase,
+  env: StartupBootstrapEnv,
+): Promise<void> => {
+  if (!parseEnterpriseFeatureFlags(env).ENABLE_PLATFORM_MANAGED_AGENTS) return;
+  await ensureDefaultInboxProvisioned(db, { locale: env.DEFAULT_LANG });
+};
+
 const bootstrapProcess = process as NodeJS.Process & {
   __lobehubPlatformBootstrapPromise?: Promise<StartupBootstrapOutcome>;
 };
@@ -158,7 +177,8 @@ export const bootstrapPlatformAdminRuntime = (
     if (env.NEXT_PHASE === PHASE_PRODUCTION_BUILD) {
       return { reason: 'build-phase', status: 'skipped' } as const;
     }
-    if (!parseEnterpriseFeatureFlags(env).ENABLE_PLATFORM_ADMIN) {
+    const flags = parseEnterpriseFeatureFlags(env);
+    if (!flags.ENABLE_PLATFORM_ADMIN && !flags.ENABLE_PLATFORM_MANAGED_AGENTS) {
       return { reason: 'platform-admin-disabled', status: 'skipped' } as const;
     }
     if (!env.DATABASE_URL) {
@@ -168,7 +188,13 @@ export const bootstrapPlatformAdminRuntime = (
     try {
       const { getServerDB } = await import('@/database/core/db-adaptor');
       const db = await getServerDB();
-      return await runStartupPlatformBootstrap(db, env);
+      if (flags.ENABLE_PLATFORM_ADMIN) {
+        const outcome = await runStartupPlatformBootstrap(db, env);
+        await runManagedAgentsStartupBootstrap(db, env);
+        return outcome;
+      }
+      await runManagedAgentsStartupBootstrap(db, env);
+      return { status: 'seeded', superAdminCount: 0 };
     } catch (error) {
       const errorCategory = classifyError(error);
       console.error(`${LOG_PREFIX} database unavailable at startup (non-blocking)`, {

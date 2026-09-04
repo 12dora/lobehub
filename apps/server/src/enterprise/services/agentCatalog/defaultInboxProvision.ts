@@ -23,25 +23,12 @@ import { getServerDefaultAgentConfig } from '@/server/globalConfig';
 import {
   platformAgentDependencySnapshotSchema,
   platformAgentVersionConfigSchema,
-  safeText,
 } from '../../contracts/platformAgents/common';
 import { resolveServerRuntimeBranding } from '../branding/runtimeBranding';
 import { PlatformAgentDependencyValidationError, PlatformAgentInvalidInputError } from './errors';
 
 /** Catalog identity key for the provisioned default-inbox Agent (matches the system key). */
 export const PLATFORM_DEFAULT_INBOX_AGENT_KEY = PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY;
-
-/**
- * Admin save still requires a non-empty systemRole (editor `missing.systemRole` +
- * `platformAgentVersionConfigSchema`), but the effective legacy inbox default is empty
- * (`DEFAULT_AGENT_CONFIG.systemRole === ''`). Seed validation relaxes only that field so
- * provisioning preserves the runtime default instead of inventing a prompt.
- */
-const defaultInboxSeedConfigSchema = platformAgentVersionConfigSchema
-  .extend({
-    systemRole: safeText(100_000, 0),
-  })
-  .strict();
 
 const isEnabledChatModel = (
   payload: Record<string, unknown>,
@@ -106,12 +93,14 @@ export const isDefaultInboxGlobalAssignment = (
 export const isEffectiveDefaultInboxGlobalAssignment = (
   assignment: Pick<
     PlatformAgentAssignmentSafeItem,
-    'enabled' | 'status' | 'targetId' | 'targetType'
+    'enabled' | 'pinnedVersionId' | 'status' | 'targetId' | 'targetType' | 'versionPolicy'
   >,
 ): boolean =>
   isDefaultInboxGlobalAssignment(assignment) &&
   assignment.enabled &&
-  assignment.status === 'active';
+  assignment.status === 'active' &&
+  assignment.versionPolicy === 'latest_published' &&
+  assignment.pinnedVersionId === null;
 
 export interface DefaultInboxSeed {
   config: PlatformAgentVersionConfig;
@@ -152,6 +141,12 @@ export const buildDefaultInboxSeed = async (
   // builtin inbox title (`DEFAULT_INBOX_TITLE` / chat `inbox.title`).
   const displayName =
     branding.defaultAgentDisplayName?.trim() || builtinInboxTitleFor(options.locale);
+  // Published brand icon, else published logo, else the builtin inbox avatar. Unset
+  // `publishedRevision` means no brand is live, so skip resolved fallback logos.
+  const avatar =
+    (branding.publishedRevision
+      ? branding.iconUrl?.trim() || branding.logoUrl?.trim()
+      : undefined) || DEFAULT_INBOX_AVATAR;
   // Preserve the effective legacy value, including an empty prompt. Do not substitute a
   // canned "helpful assistant" role — that would change inbox behaviour on first provision.
   const systemRole = merged.systemRole?.trim() ?? '';
@@ -181,8 +176,8 @@ export const buildDefaultInboxSeed = async (
     throw new PlatformAgentDependencyValidationError(['AI_MODEL_UNAVAILABLE']);
   }
 
-  const configParsed = defaultInboxSeedConfigSchema.safeParse({
-    avatar: DEFAULT_INBOX_AVATAR,
+  const configParsed = platformAgentVersionConfigSchema.safeParse({
+    avatar,
     backgroundColor: null,
     description: null,
     displayName,

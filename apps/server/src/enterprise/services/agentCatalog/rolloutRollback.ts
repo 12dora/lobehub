@@ -3,11 +3,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { ExactPlatformAgentVersion } from '@/database/repositories/platformAgentCatalog';
 import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import type { PlatformJobItem } from '@/database/schemas/platform';
-import {
-  PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE,
-  platformAgentAssignments,
-  platformJobs,
-} from '@/database/schemas/platform';
+import { PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE, platformJobs } from '@/database/schemas/platform';
 import type { Transaction } from '@/database/type';
 
 import type { AdminPlatformAgentRolloutRollbackInput } from '../../contracts/platformAgents';
@@ -107,59 +103,31 @@ export const applyRollbackPointer = async (
     target: Pick<ExactPlatformAgentVersion, 'id'>;
   },
 ) => {
-  const { actorUserId, identity, originalInput, target } = params;
+  const { identity, originalInput, target } = params;
   const repository = new PlatformAgentCatalogRepository(tx);
-  let updatedIdentity;
-  if (originalInput.snapshot.versionPolicy === 'pinned') {
-    const [assignment] = await tx
-      .update(platformAgentAssignments)
-      .set({ pinnedVersionId: target.id, updatedAt: new Date() })
-      .where(
-        and(
-          eq(platformAgentAssignments.id, originalInput.snapshot.assignmentId),
-          eq(platformAgentAssignments.agentId, identity.id),
-          eq(platformAgentAssignments.enabled, true),
-          eq(platformAgentAssignments.status, 'active'),
-          eq(platformAgentAssignments.targetType, originalInput.snapshot.targetType),
-          eq(platformAgentAssignments.targetId, originalInput.snapshot.targetId),
-          eq(platformAgentAssignments.versionPolicy, 'pinned'),
-          eq(platformAgentAssignments.pinnedVersionId, originalInput.snapshot.targetVersionId),
-        ),
-      )
-      .returning({ id: platformAgentAssignments.id });
-    if (!assignment) throw new PlatformAgentRevisionConflictError();
-    updatedIdentity = await repository.updateDraftCas({
-      expectedDraftSequence: identity.draftSequence,
-      expectedRevision: identity.revision,
-      id: identity.id,
-      patch: { updatedBy: actorUserId },
-    });
-  } else {
-    if (identity.currentVersionId !== originalInput.snapshot.targetVersionId) {
-      throw new PlatformAgentRevisionConflictError();
-    }
-    const assignment = await repository.getAssignment(
-      identity.id,
-      originalInput.snapshot.assignmentId,
-    );
-    if (
-      !assignment ||
-      !assignment.enabled ||
-      assignment.status !== 'active' ||
-      assignment.targetType !== originalInput.snapshot.targetType ||
-      assignment.targetId !== originalInput.snapshot.targetId ||
-      assignment.versionPolicy !== 'latest_published'
-    ) {
-      throw new PlatformAgentRevisionConflictError();
-    }
-    updatedIdentity = await repository.pointToVersionCas({
-      agentId: identity.id,
-      expectedDraftSequence: identity.draftSequence,
-      expectedRevision: identity.revision,
-      publishedAt: new Date(),
-      versionId: target.id,
-    });
+  if (identity.currentVersionId !== originalInput.snapshot.targetVersionId) {
+    throw new PlatformAgentRevisionConflictError();
   }
+  const assignment = await repository.getAssignment(
+    identity.id,
+    originalInput.snapshot.assignmentId,
+  );
+  if (
+    !assignment ||
+    !assignment.enabled ||
+    assignment.status !== 'active' ||
+    assignment.targetType !== originalInput.snapshot.targetType ||
+    assignment.targetId !== originalInput.snapshot.targetId
+  ) {
+    throw new PlatformAgentRevisionConflictError();
+  }
+  const updatedIdentity = await repository.pointToVersionCas({
+    agentId: identity.id,
+    expectedDraftSequence: identity.draftSequence,
+    expectedRevision: identity.revision,
+    publishedAt: new Date(),
+    versionId: target.id,
+  });
   if (!updatedIdentity) throw new PlatformAgentRevisionConflictError();
   return updatedIdentity;
 };

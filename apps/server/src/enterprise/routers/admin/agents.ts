@@ -32,6 +32,7 @@ import {
   withPlatformPermission,
 } from '../../guards/platformPermission';
 import {
+  ensureDefaultInboxProvisioned,
   PlatformAgentAdminService,
   PlatformAgentPublicationService,
   validateExactPlatformAgentDependencies,
@@ -146,6 +147,7 @@ export const adminAgentsRouter = router({
     .query(async ({ ctx, input }) => {
       assertAgentFeatureEnabled();
       try {
+        await ensureDefaultInboxProvisioned(ctx.serverDB);
         return await new PlatformAgentAdminService(ctx.serverDB).list(input);
       } catch (error) {
         return mapAgentServiceError(error);

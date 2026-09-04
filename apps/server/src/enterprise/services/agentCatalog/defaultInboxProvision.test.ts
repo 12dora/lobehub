@@ -86,6 +86,77 @@ describe('buildDefaultInboxSeed', () => {
     expect(seed.config.systemRole).toBe('');
   });
 
+  it('seeds the published branding icon when a brand is live', async () => {
+    getProviderByKey.mockResolvedValue({
+      id: 'provider-id',
+      providerKey: DEFAULT_AGENT_CONFIG.provider,
+      status: 'published',
+    });
+    getLatestPublishedProviderRevision.mockResolvedValue({
+      checksum,
+      payload: {
+        models: [{ enabled: true, modelKey: DEFAULT_AGENT_CONFIG.model, type: 'chat' }],
+        provider: { enabled: true, providerKey: DEFAULT_AGENT_CONFIG.provider },
+      },
+      revision: 1,
+      status: 'published',
+    });
+
+    const seed = await buildDefaultInboxSeed(db, {
+      getServerDefaultAgentConfig: () => ({}),
+      resolveBranding: async () =>
+        ({
+          defaultAgentDisplayName: 'Acme AI',
+          iconUrl: '/brand-icon.png',
+          logoUrl: '/brand-logo.png',
+          publishedRevision: '12',
+        }) as never,
+    });
+
+    expect(seed.config.avatar).toBe('/brand-icon.png');
+  });
+
+  it('falls back from published icon to logo, then to the builtin inbox avatar', async () => {
+    getProviderByKey.mockResolvedValue({
+      id: 'provider-id',
+      providerKey: DEFAULT_AGENT_CONFIG.provider,
+      status: 'published',
+    });
+    getLatestPublishedProviderRevision.mockResolvedValue({
+      checksum,
+      payload: {
+        models: [{ enabled: true, modelKey: DEFAULT_AGENT_CONFIG.model, type: 'chat' }],
+        provider: { enabled: true, providerKey: DEFAULT_AGENT_CONFIG.provider },
+      },
+      revision: 1,
+      status: 'published',
+    });
+
+    const withLogo = await buildDefaultInboxSeed(db, {
+      getServerDefaultAgentConfig: () => ({}),
+      resolveBranding: async () =>
+        ({
+          defaultAgentDisplayName: null,
+          iconUrl: null,
+          logoUrl: '/brand-logo.png',
+          publishedRevision: '12',
+        }) as never,
+    });
+    expect(withLogo.config.avatar).toBe('/brand-logo.png');
+
+    const unpublished = await buildDefaultInboxSeed(db, {
+      getServerDefaultAgentConfig: () => ({}),
+      resolveBranding: async () =>
+        ({
+          defaultAgentDisplayName: null,
+          iconUrl: '/fallback-icon.png',
+          logoUrl: '/fallback-logo.png',
+          publishedRevision: null,
+        }) as never,
+    });
+    expect(unpublished.config.avatar).toBe(DEFAULT_INBOX_AVATAR);
+  });
+
   it('keeps an empty legacy systemRole empty instead of substituting a canned prompt', async () => {
     getProviderByKey.mockResolvedValue({
       id: 'provider-id',

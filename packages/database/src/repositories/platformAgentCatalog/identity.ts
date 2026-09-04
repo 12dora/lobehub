@@ -338,7 +338,7 @@ export class PlatformAgentIdentityRepository {
   }): Promise<PlatformAgentItem | undefined> =>
     inTransaction(this.db, async (transaction) => {
       const [version] = await transaction
-        .select({ id: platformAgentVersions.id })
+        .select({ id: platformAgentVersions.id, version: platformAgentVersions.version })
         .from(platformAgentVersions)
         .where(
           and(
@@ -354,6 +354,7 @@ export class PlatformAgentIdentityRepository {
       const [identity] = await transaction
         .update(platformAgents)
         .set({
+          currentVersion: version.version,
           currentVersionId: version.id,
           draftSequence: params.expectedDraftSequence + 1,
           publishedAt: params.publishedAt,
@@ -372,6 +373,35 @@ export class PlatformAgentIdentityRepository {
         .returning();
       return identity;
     });
+
+  /**
+   * Copy the published version's SemVer label onto the deprecated `current_version` column
+   * when it is null or `''` (provisioning used to leave it empty). No CAS bump — the field
+   * is not part of the draft token.
+   */
+  backfillEmptyCurrentVersionLabel = async (
+    identity: Pick<PlatformAgentItem, 'currentVersion' | 'currentVersionId' | 'id'>,
+  ): Promise<PlatformAgentItem | undefined> => {
+    if (
+      !identity.currentVersionId ||
+      (identity.currentVersion !== '' && identity.currentVersion !== null)
+    ) {
+      return undefined;
+    }
+    const version = await this.getExactVersion(identity.id, identity.currentVersionId);
+    if (!version) return undefined;
+    const [row] = await this.db
+      .update(platformAgents)
+      .set({ currentVersion: version.version, updatedAt: new Date() })
+      .where(
+        and(
+          eq(platformAgents.id, identity.id),
+          eq(platformAgents.currentVersionId, identity.currentVersionId),
+        ),
+      )
+      .returning();
+    return row;
+  };
 
   /**
    * Acquire the per-Agent reference lock (2) then the identity row lock (3), and return

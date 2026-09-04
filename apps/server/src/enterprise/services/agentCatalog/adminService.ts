@@ -21,7 +21,10 @@ import type {
   AdminPlatformAgentSetDefaultInboxInput,
   AdminPlatformAgentVersionsListInput,
 } from '../../contracts/platformAgents';
+import { withLatestPublishedAssignmentVersion } from '../../contracts/platformAgents/assignmentCore';
+import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import type { AuditAction } from '../audit/auditActionCatalog';
+import { isModuleEnabled } from '../moduleSettings';
 import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { acquirePlatformDefaultInboxLock } from '../platformDependencyLock';
@@ -54,6 +57,67 @@ import {
 } from './publication';
 
 const log = debug('lobe-server:platform-agent-admin');
+
+/** Automatic provision uses a nullable system actor — never a fake user id. */
+export const DEFAULT_INBOX_BOOTSTRAP_ACTOR: string | null = null;
+
+const classifyError = (error: unknown): string =>
+  error instanceof Error ? error.name || 'Error' : 'UnknownError';
+
+const findDefaultInboxGlobalAssignment = async (
+  repository: PlatformAgentCatalogRepository,
+  agentId: string,
+): Promise<PlatformAgentAssignmentSafeItem | undefined> => {
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await repository.listAssignments({ agentId, cursor, limit: 100 });
+    const found = page.items.find(isDefaultInboxGlobalAssignment);
+    if (found) return found;
+    if (!page.nextCursor) return undefined;
+    cursor = page.nextCursor;
+  }
+};
+
+const isHealthyDefaultInboxIdentity = (identity: PlatformAgentItem): boolean =>
+  isDefaultInboxIdentity(identity) &&
+  !identity.migrationRequired &&
+  identity.status === 'published' &&
+  Boolean(identity.currentVersionId) &&
+  Boolean(identity.currentVersion?.trim());
+
+/** Read-only health peek: no locks, no audit. */
+const peekDefaultInboxProvisionHealth = async (db: LobeChatDatabase): Promise<boolean> => {
+  const repository = new PlatformAgentCatalogRepository(db);
+  const identity = await repository.getDefaultIdentity();
+  if (!identity || !isHealthyDefaultInboxIdentity(identity)) return false;
+  const assignment = await findDefaultInboxGlobalAssignment(repository, identity.id);
+  return Boolean(assignment && isEffectiveDefaultInboxGlobalAssignment(assignment));
+};
+
+/**
+ * Idempotent default-inbox provision for bootstrap and the admin list path.
+ * Healthy catalogs return without taking locks or writing an audit row. Errors are
+ * logged and never rethrown so a missing AI catalog or similar cannot crash boot / list.
+ */
+export const ensureDefaultInboxProvisioned = async (
+  db: LobeChatDatabase,
+  params: { actorId?: string | null; locale?: string } = {},
+): Promise<void> => {
+  if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) return;
+  try {
+    if (!(await isModuleEnabled('managedAgents'))) return;
+    if (await peekDefaultInboxProvisionHealth(db)) return;
+    await new PlatformAgentAdminService(db).provisionDefaultInbox({
+      actorId: params.actorId ?? null,
+      locale: params.locale,
+    });
+  } catch (error) {
+    console.error('[platformBootstrap] default-inbox provision failed (non-blocking)', {
+      errorCategory: classifyError(error),
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
 
 const identityView = platformAgentIdentityView;
 const mutationView = platformAgentMutationView;
@@ -109,7 +173,7 @@ export class PlatformAgentAdminService {
 
   private appendAudit = async (params: {
     action: AuditAction;
-    actorUserId: string;
+    actorUserId: string | null;
     afterDiff?: Record<string, unknown>;
     db?: LobeChatDatabase | Transaction;
     reason?: string | null;
@@ -128,7 +192,7 @@ export class PlatformAgentAdminService {
 
   private appendFailureAudit = async (params: {
     action: AuditAction;
-    actorUserId: string;
+    actorUserId: string | null;
     errorCategory: string;
     reason?: string | null;
     targetId: string;
@@ -152,7 +216,7 @@ export class PlatformAgentAdminService {
 
   private atomicMutation = async <T>(params: {
     action: AuditAction;
-    actorUserId: string;
+    actorUserId: string | null;
     reason?: string | null;
     run: (tx: Transaction) => Promise<T>;
     summarize: (result: T) => Record<string, unknown>;
@@ -187,20 +251,6 @@ export class PlatformAgentAdminService {
     }
   };
 
-  private findDefaultInboxGlobalAssignment = async (
-    repository: PlatformAgentCatalogRepository,
-    agentId: string,
-  ): Promise<PlatformAgentAssignmentSafeItem | undefined> => {
-    let cursor: string | undefined;
-    for (;;) {
-      const page = await repository.listAssignments({ agentId, cursor, limit: 100 });
-      const found = page.items.find(isDefaultInboxGlobalAssignment);
-      if (found) return found;
-      if (!page.nextCursor) return undefined;
-      cursor = page.nextCursor;
-    }
-  };
-
   /**
    * Lock order (ADM-01/ADM-02): (2) per-Agent reference lock, then (3) identity FOR UPDATE.
    * The caller must already hold (1) the default-inbox singleton lock. Never row-lock the
@@ -210,27 +260,30 @@ export class PlatformAgentAdminService {
     tx: Transaction,
     repository: PlatformAgentCatalogRepository,
     agentId: string,
-    actorUserId: string,
+    actorUserId: string | null,
   ) => {
     await acquirePlatformAgentReferenceLock(tx, agentId);
-    const identity = await repository.lockIdentity(agentId);
-    if (!identity) throw new PlatformAgentNotFoundError();
-    const existing = await this.findDefaultInboxGlobalAssignment(repository, identity.id);
+    const locked = await repository.lockIdentity(agentId);
+    if (!locked) throw new PlatformAgentNotFoundError();
+    const identity = (await repository.backfillEmptyCurrentVersionLabel(locked)) ?? locked;
+    const existing = await findDefaultInboxGlobalAssignment(repository, identity.id);
     if (existing && isEffectiveDefaultInboxGlobalAssignment(existing)) {
       return mutationView(identity);
     }
     if (existing) {
       // Runtime `listEffectiveInputs` requires enabled=true AND status='active'. A
-      // leftover pending / disabled / inactive global row must be repaired, not kept.
-      const updatedAssignment = await repository.updateAssignment(identity.id, existing.id, {
-        enabled: true,
-        mode: existing.mode,
-        pinnedVersionId: existing.pinnedVersionId,
-        status: 'active',
-        targetId: existing.targetId,
-        targetType: existing.targetType,
-        versionPolicy: existing.versionPolicy,
-      });
+      // leftover pending / disabled / inactive / pinned global row must be repaired, not kept.
+      const updatedAssignment = await repository.updateAssignment(
+        identity.id,
+        existing.id,
+        withLatestPublishedAssignmentVersion({
+          enabled: true,
+          mode: existing.mode,
+          status: 'active',
+          targetId: existing.targetId,
+          targetType: existing.targetType,
+        }),
+      );
       if (!updatedAssignment) throw new PlatformAgentNotFoundError();
     } else {
       const created = await repository.createAssignment({
@@ -325,15 +378,16 @@ export class PlatformAgentAdminService {
   };
 
   /**
-   * Idempotent admin bootstrap of the default-inbox identity. Never runs at startup — once the
-   * row exists, runtime overlays it onto every user's builtin inbox.
+   * Idempotent bootstrap of the default-inbox identity. Called from startup / admin list
+   * via `ensureDefaultInboxProvisioned`; the mutation remains as a repair path.
    */
-  provisionDefaultInbox = async (params: { actorId: string; locale?: string }) => {
+  provisionDefaultInbox = async (params: { actorId?: string | null; locale?: string } = {}) => {
+    const actorUserId = params.actorId ?? null;
     const startedAt = Date.now();
     try {
       const result = await this.atomicMutation({
         action: 'admin.agents.provisionDefaultInbox',
-        actorUserId: params.actorId,
+        actorUserId,
         run: async (tx) => {
           const repository = new PlatformAgentCatalogRepository(tx);
           await acquirePlatformDefaultInboxLock(tx);
@@ -354,7 +408,7 @@ export class PlatformAgentAdminService {
               tx,
               repository,
               existing.id,
-              params.actorId,
+              actorUserId,
             );
             return { created: false as const, identity };
           }
@@ -364,12 +418,12 @@ export class PlatformAgentAdminService {
           });
           const created = await repository.createIdentity({
             agentKey: PLATFORM_DEFAULT_INBOX_AGENT_KEY,
-            createdBy: params.actorId,
+            createdBy: actorUserId,
             isDefault: true,
             systemKey: PLATFORM_DEFAULT_INBOX_AGENT_KEY,
           });
           const { identity: published } = await appendAndPublishPlatformAgentVersion(tx, {
-            actorUserId: params.actorId,
+            actorUserId,
             config: seed.config,
             dependencySnapshot: seed.dependencySnapshot,
             identity: created,
@@ -380,7 +434,7 @@ export class PlatformAgentAdminService {
             tx,
             repository,
             published.id,
-            params.actorId,
+            actorUserId,
           );
           return { created: true as const, identity };
         },
@@ -452,19 +506,14 @@ export class PlatformAgentAdminService {
     const repository = new PlatformAgentCatalogRepository(this.db);
     const identity = await repository.getIdentity(input.agentId);
     if (!identity || identity.migrationRequired) throw new PlatformAgentNotFoundError();
-    if (input.assignment.pinnedVersionId) {
-      const version = await repository.getExactVersion(
-        input.agentId,
-        input.assignment.pinnedVersionId,
-      );
-      if (!version) throw new PlatformAgentNotFoundError();
-    }
+    // Pins are ignored: canonicalize before any pinned-version lookup so a stale pin cannot fail.
+    const assignment = withLatestPublishedAssignmentVersion(input.assignment);
     // Build warnings independently — disabled and mandatory are orthogonal signals.
     const warnings: Array<'ASSIGNMENT_DISABLED' | 'MANDATORY_AGENT_CANNOT_BE_HIDDEN'> = [];
-    if (!input.assignment.enabled) warnings.push('ASSIGNMENT_DISABLED');
-    if (input.assignment.mode === 'mandatory') warnings.push('MANDATORY_AGENT_CANNOT_BE_HIDDEN');
+    if (!assignment.enabled) warnings.push('ASSIGNMENT_DISABLED');
+    if (assignment.mode === 'mandatory') warnings.push('MANDATORY_AGENT_CANNOT_BE_HIDDEN');
     return {
-      estimatedUsers: await repository.countAssignmentTargets(input.assignment),
+      estimatedUsers: await repository.countAssignmentTargets(assignment),
       // Stable i18n codes only — the admin UI maps `agentCatalog.assignment.warning.${code}`.
       warnings,
     };
@@ -490,18 +539,13 @@ export class PlatformAgentAdminService {
           input.expectedDraftToken,
           input.expectedRevision,
         );
-        if (input.pinnedVersionId) {
-          const pinned = await repository.getExactVersion(locked.id, input.pinnedVersionId);
-          if (!pinned) throw new PlatformAgentNotFoundError();
-        }
-        const values = {
+        // Pins are ignored: canonicalize before any pinned-version lookup so a stale pin cannot fail.
+        const values = withLatestPublishedAssignmentVersion({
           enabled: input.enabled,
           mode: input.mode,
-          pinnedVersionId: input.pinnedVersionId,
           targetId: input.targetId,
           targetType: input.targetType,
-          versionPolicy: input.versionPolicy,
-        };
+        });
         if (input.assignmentId) {
           const current = await repository.getAssignment(locked.id, input.assignmentId);
           if (!current) throw new PlatformAgentNotFoundError();

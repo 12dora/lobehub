@@ -38,11 +38,8 @@ const safeAssignmentColumns = {
   versionPolicy: platformAgentAssignments.versionPolicy,
 };
 
-const effectiveVersionIdSql = sql<string>`CASE
-  WHEN ${platformAgentAssignments.versionPolicy} = 'pinned'
-    THEN ${platformAgentAssignments.pinnedVersionId}
-  ELSE ${platformAgents.currentVersionId}
-END`;
+/** Assignments always follow the identity's current published version — ignore legacy pins. */
+const effectiveVersionIdSql = platformAgents.currentVersionId;
 
 /** Normalize drizzle / node-pg / PGlite execute results into a row array. */
 const rowsFromExecute = <T extends Record<string, unknown>>(result: unknown): T[] => {

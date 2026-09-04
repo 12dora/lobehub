@@ -4,7 +4,7 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type { EnterpriseObservabilityEvent } from '../../observability';
 import { setEnterprisePlatformObserverForTest } from '../../observability';
-import { PlatformAgentAdminService } from './adminService';
+import { ensureDefaultInboxProvisioned, PlatformAgentAdminService } from './adminService';
 import {
   PlatformAgentDefaultRequiredError,
   PlatformAgentInvalidInputError,
@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   appendVersionCas: vi.fn(),
   archiveIdentityCas: vi.fn(),
   assertDependencies: vi.fn(),
+  backfillEmptyCurrentVersionLabel: vi.fn(),
   countAgentReferences: vi.fn(),
   countAssignmentTargets: vi.fn(),
   countAssignments: vi.fn(),
@@ -37,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   getIdentityByAgentKey: vi.fn(),
   getAssignment: vi.fn(),
   hardDeleteAgentCascade: vi.fn(),
+  isModuleEnabled: vi.fn(),
   listAssignments: vi.fn(),
   listDependentMaterializations: vi.fn(),
   listIdentities: vi.fn(),
@@ -52,6 +54,7 @@ vi.mock('@/database/repositories/platformAgentCatalog', () => ({
   PlatformAgentCatalogRepository: class {
     appendVersionCas = mocks.appendVersionCas;
     archiveIdentityCas = mocks.archiveIdentityCas;
+    backfillEmptyCurrentVersionLabel = mocks.backfillEmptyCurrentVersionLabel;
     countAgentReferences = mocks.countAgentReferences;
     countAssignmentTargets = mocks.countAssignmentTargets;
     countAssignments = mocks.countAssignments;
@@ -86,12 +89,17 @@ vi.mock('../platformDependencyLock', () => ({
   acquirePlatformDefaultInboxLock: mocks.acquireDefaultLock,
   acquirePlatformDependencyPublicationLock: mocks.acquireLock,
 }));
+vi.mock('../moduleSettings', () => ({
+  isBootModuleEnabled: () => true,
+  isModuleEnabled: mocks.isModuleEnabled,
+}));
 vi.mock('./dependencyValidator', () => ({
   assertExactPlatformAgentDependencies: mocks.assertDependencies,
 }));
 
 const identity = (overrides: Record<string, unknown> = {}) => ({
   agentKey: 'support',
+  currentVersion: '1.0.0',
   currentVersionId: 'version-id',
   draftSequence: 4,
   id: 'agent-id',
@@ -152,6 +160,7 @@ describe('PlatformAgentAdminService', () => {
     observed.length = 0;
     setEnterprisePlatformObserverForTest({ record: (event) => observed.push(event) });
     mocks.appendAudit.mockResolvedValue(undefined);
+    mocks.isModuleEnabled.mockResolvedValue(true);
   });
 
   afterEach(() => setEnterprisePlatformObserverForTest(null));
@@ -784,6 +793,74 @@ describe('PlatformAgentAdminService', () => {
     });
   });
 
+  it('ignores a stale pin on assignment preview instead of looking the version up', async () => {
+    mocks.getIdentity.mockResolvedValue(identity());
+    mocks.countAssignmentTargets.mockResolvedValue(4);
+    mocks.getExactVersion.mockResolvedValue(undefined);
+
+    await expect(
+      new PlatformAgentAdminService(db).previewAssignment({
+        agentId: 'agent-id',
+        assignment: {
+          enabled: true,
+          mode: 'optional',
+          pinnedVersionId: 'missing-version',
+          targetId: '__global__',
+          targetType: 'global',
+          versionPolicy: 'pinned',
+        },
+      }),
+    ).resolves.toEqual({
+      estimatedUsers: 4,
+      warnings: [],
+    });
+    expect(mocks.getExactVersion).not.toHaveBeenCalled();
+    expect(mocks.countAssignmentTargets).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pinnedVersionId: null,
+        versionPolicy: 'latest_published',
+      }),
+    );
+  });
+
+  it('persists latest_published and ignores a stale pin on assignment upsert', async () => {
+    const locked = identity();
+    mocks.lockIdentity.mockResolvedValue(locked);
+    mocks.createAssignment.mockResolvedValue({
+      agentId: locked.id,
+      enabled: true,
+      id: 'assignment-id',
+      mode: 'optional',
+      pinnedVersionId: null,
+      targetId: '__global__',
+      targetType: 'global',
+      versionPolicy: 'latest_published',
+    });
+    mocks.updateDraftCas.mockResolvedValue({ ...locked, draftSequence: 5 });
+    mocks.getExactVersion.mockResolvedValue(undefined);
+
+    await expect(
+      new PlatformAgentAdminService(db).upsertAssignment('admin-id', {
+        ...pointer(locked),
+        enabled: true,
+        mode: 'optional',
+        pinnedVersionId: 'missing-version',
+        reason: 'legacy pin from older client',
+        targetId: '__global__',
+        targetType: 'global',
+        versionPolicy: 'pinned',
+      }),
+    ).resolves.toMatchObject({ assignment: { id: 'assignment-id' } });
+    expect(mocks.getExactVersion).not.toHaveBeenCalled();
+    expect(mocks.createAssignment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: locked.id,
+        pinnedVersionId: null,
+        versionPolicy: 'latest_published',
+      }),
+    );
+  });
+
   describe('provisionDefaultInbox', () => {
     const seed = {
       config: createConfig,
@@ -854,6 +931,7 @@ describe('PlatformAgentAdminService', () => {
       expect(mocks.createIdentity).toHaveBeenCalledWith(
         expect.objectContaining({
           agentKey: 'default-inbox',
+          createdBy: 'admin-id',
           isDefault: true,
           systemKey: 'default-inbox',
         }),
@@ -870,7 +948,77 @@ describe('PlatformAgentAdminService', () => {
       expect(mocks.appendAudit).toHaveBeenCalledWith(
         expect.objectContaining({
           action: 'admin.agents.provisionDefaultInbox',
+          actorUserId: 'admin-id',
           afterDiff: expect.objectContaining({ created: true, locale: 'zh-CN' }),
+          result: 'success',
+        }),
+      );
+    });
+
+    it('records a null system actor when automatic provision creates the inbox', async () => {
+      const created = identity({
+        agentKey: 'default-inbox',
+        currentVersion: null,
+        currentVersionId: null,
+        draftSequence: 0,
+        id: 'inbox-agent',
+        isDefault: true,
+        revision: 0,
+        status: 'draft',
+        systemKey: 'default-inbox',
+      });
+      const published = {
+        ...created,
+        currentVersion: '1.0.0',
+        currentVersionId: 'version-id',
+        draftSequence: 2,
+        revision: 1,
+        status: 'published',
+      };
+      mocks.getDefaultIdentity.mockResolvedValue(undefined);
+      mocks.getIdentityByAgentKey.mockResolvedValue(undefined);
+      mocks.createIdentity.mockResolvedValue(created);
+      mocks.appendVersionCas.mockResolvedValue({
+        agentId: created.id,
+        checksum: 'f'.repeat(64),
+        config: createConfig,
+        createdAt: new Date('2026-09-04T00:00:00Z'),
+        createdBy: null,
+        dependencySnapshot: createDependencySnapshot,
+        id: 'version-id',
+        version: '1.0.0',
+      });
+      mocks.pointToVersionCas.mockResolvedValue(published);
+      mocks.lockIdentity.mockResolvedValue(published);
+      mocks.listAssignments.mockResolvedValue({ items: [], nextCursor: null });
+      mocks.createAssignment.mockResolvedValue({
+        agentId: published.id,
+        enabled: true,
+        id: 'global-assignment',
+        mode: 'default',
+        pinnedVersionId: null,
+        status: 'active',
+        targetId: '__global__',
+        targetType: 'global',
+        versionPolicy: 'latest_published',
+      });
+      mocks.updateDraftCas.mockResolvedValue({ ...published, draftSequence: 3 });
+
+      await new PlatformAgentAdminService(db, {
+        buildDefaultInboxSeed: async () => seed,
+        invalidation: { publish: vi.fn() },
+      }).provisionDefaultInbox({ actorId: null });
+
+      expect(mocks.createIdentity).toHaveBeenCalledWith(
+        expect.objectContaining({ createdBy: null }),
+      );
+      expect(mocks.appendVersionCas).toHaveBeenCalledWith(
+        expect.objectContaining({ createdBy: null }),
+      );
+      expect(mocks.appendAudit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'admin.agents.provisionDefaultInbox',
+          actorUserId: null,
           result: 'success',
         }),
       );
@@ -1015,6 +1163,58 @@ describe('PlatformAgentAdminService', () => {
       expect(mocks.createIdentity).not.toHaveBeenCalled();
     });
 
+    it('normalises a legacy pinned default-inbox global assignment to latest_published', async () => {
+      const existing = identity({
+        agentKey: 'default-inbox',
+        id: 'inbox-agent',
+        isDefault: true,
+        systemKey: 'default-inbox',
+      });
+      mocks.getDefaultIdentity.mockResolvedValue(existing);
+      mocks.lockIdentity.mockResolvedValue(existing);
+      mocks.listAssignments.mockResolvedValue({
+        items: [
+          {
+            agentId: existing.id,
+            enabled: true,
+            id: 'global-assignment',
+            mode: 'default',
+            pinnedVersionId: 'stale-version',
+            status: 'active',
+            targetId: '__global__',
+            targetType: 'global',
+            versionPolicy: 'pinned',
+          },
+        ],
+        nextCursor: null,
+      });
+      mocks.updateAssignment.mockResolvedValue({
+        agentId: existing.id,
+        enabled: true,
+        id: 'global-assignment',
+        mode: 'default',
+        pinnedVersionId: null,
+        status: 'active',
+        targetId: '__global__',
+        targetType: 'global',
+        versionPolicy: 'latest_published',
+      });
+      mocks.updateDraftCas.mockResolvedValue({ ...existing, draftSequence: 5 });
+
+      await new PlatformAgentAdminService(db).provisionDefaultInbox({ actorId: 'admin-id' });
+      expect(mocks.updateAssignment).toHaveBeenCalledWith(
+        existing.id,
+        'global-assignment',
+        expect.objectContaining({
+          enabled: true,
+          pinnedVersionId: null,
+          status: 'active',
+          versionPolicy: 'latest_published',
+        }),
+      );
+      expect(mocks.createIdentity).not.toHaveBeenCalled();
+    });
+
     it('refuses to silently adopt a non-default identity that already holds the reserved key', async () => {
       const occupant = identity({
         agentKey: 'default-inbox',
@@ -1035,6 +1235,44 @@ describe('PlatformAgentAdminService', () => {
       });
       expect(mocks.createIdentity).not.toHaveBeenCalled();
       expect(mocks.createAssignment).not.toHaveBeenCalled();
+    });
+
+    it('backfills an empty current_version from the published version row', async () => {
+      const existing = identity({
+        agentKey: 'default-inbox',
+        currentVersion: '',
+        id: 'inbox-agent',
+        isDefault: true,
+        systemKey: 'default-inbox',
+      });
+      const backfilled = { ...existing, currentVersion: '1.0.0' };
+      mocks.getDefaultIdentity.mockResolvedValue(existing);
+      mocks.getIdentityByAgentKey.mockResolvedValue(existing);
+      mocks.lockIdentity.mockResolvedValue(existing);
+      mocks.backfillEmptyCurrentVersionLabel.mockResolvedValue(backfilled);
+      mocks.listAssignments.mockResolvedValue({
+        items: [
+          {
+            agentId: existing.id,
+            enabled: true,
+            id: 'global-assignment',
+            mode: 'default',
+            pinnedVersionId: null,
+            status: 'active',
+            targetId: '__global__',
+            targetType: 'global',
+            versionPolicy: 'latest_published',
+          },
+        ],
+        nextCursor: null,
+      });
+
+      const result = await new PlatformAgentAdminService(db).provisionDefaultInbox({
+        actorId: 'admin-id',
+      });
+      expect(result.identity.id).toBe(existing.id);
+      expect(mocks.backfillEmptyCurrentVersionLabel).toHaveBeenCalledWith(existing);
+      expect(mocks.createIdentity).not.toHaveBeenCalled();
     });
   });
 
@@ -1090,5 +1328,129 @@ describe('PlatformAgentAdminService', () => {
       }),
     ).rejects.toBeInstanceOf(PlatformAgentDefaultRequiredError);
     expect(mocks.deleteAssignment).not.toHaveBeenCalled();
+  });
+
+  describe('ensureDefaultInboxProvisioned', () => {
+    const healthyAssignment = (agentId: string) => ({
+      agentId,
+      enabled: true,
+      id: 'global-assignment',
+      mode: 'default',
+      pinnedVersionId: null,
+      status: 'active',
+      targetId: '__global__',
+      targetType: 'global',
+      versionPolicy: 'latest_published',
+    });
+
+    it('returns without locks or audit when the default inbox is already healthy', async () => {
+      const existing = identity({
+        agentKey: 'default-inbox',
+        id: 'inbox-agent',
+        isDefault: true,
+        systemKey: 'default-inbox',
+      });
+      mocks.getDefaultIdentity.mockResolvedValue(existing);
+      mocks.listAssignments.mockResolvedValue({
+        items: [healthyAssignment(existing.id)],
+        nextCursor: null,
+      });
+
+      vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+      try {
+        await ensureDefaultInboxProvisioned(db);
+        expect(mocks.createIdentity).not.toHaveBeenCalled();
+        expect(mocks.createAssignment).not.toHaveBeenCalled();
+        expect(mocks.acquireDefaultLock).not.toHaveBeenCalled();
+        expect(mocks.lockIdentity).not.toHaveBeenCalled();
+        expect(mocks.appendAudit).not.toHaveBeenCalled();
+        expect(db.transaction).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('skips when the managed-agents env flag is off', async () => {
+      vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '0');
+      try {
+        await ensureDefaultInboxProvisioned(db);
+        expect(mocks.isModuleEnabled).not.toHaveBeenCalled();
+        expect(mocks.getDefaultIdentity).not.toHaveBeenCalled();
+        expect(mocks.acquireDefaultLock).not.toHaveBeenCalled();
+        expect(mocks.appendAudit).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('skips when the persisted managedAgents module is disabled', async () => {
+      mocks.isModuleEnabled.mockResolvedValue(false);
+      vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+      try {
+        await ensureDefaultInboxProvisioned(db);
+        expect(mocks.isModuleEnabled).toHaveBeenCalledWith('managedAgents');
+        expect(mocks.getDefaultIdentity).not.toHaveBeenCalled();
+        expect(mocks.acquireDefaultLock).not.toHaveBeenCalled();
+        expect(mocks.appendAudit).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('falls through to locked repair when a legacy pinned assignment is still in place', async () => {
+      const existing = identity({
+        agentKey: 'default-inbox',
+        id: 'inbox-agent',
+        isDefault: true,
+        systemKey: 'default-inbox',
+      });
+      mocks.getDefaultIdentity.mockResolvedValue(existing);
+      mocks.getIdentityByAgentKey.mockResolvedValue(existing);
+      mocks.lockIdentity.mockResolvedValue(existing);
+      mocks.listAssignments.mockResolvedValue({
+        items: [
+          {
+            agentId: existing.id,
+            enabled: true,
+            id: 'global-assignment',
+            mode: 'default',
+            pinnedVersionId: 'stale-version',
+            status: 'active',
+            targetId: '__global__',
+            targetType: 'global',
+            versionPolicy: 'pinned',
+          },
+        ],
+        nextCursor: null,
+      });
+      mocks.updateAssignment.mockResolvedValue({
+        ...healthyAssignment(existing.id),
+      });
+      mocks.updateDraftCas.mockResolvedValue({ ...existing, draftSequence: 5 });
+
+      vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+      try {
+        await ensureDefaultInboxProvisioned(db);
+        expect(mocks.acquireDefaultLock).toHaveBeenCalled();
+        expect(mocks.updateAssignment).toHaveBeenCalledWith(
+          existing.id,
+          'global-assignment',
+          expect.objectContaining({
+            pinnedVersionId: null,
+            status: 'active',
+            versionPolicy: 'latest_published',
+          }),
+        );
+        expect(mocks.appendAudit).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: 'admin.agents.provisionDefaultInbox',
+            actorUserId: null,
+            result: 'success',
+          }),
+        );
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
   });
 });

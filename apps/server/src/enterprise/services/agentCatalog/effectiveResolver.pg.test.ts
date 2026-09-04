@@ -309,6 +309,41 @@ run('PlatformAgentEffectiveResolver (PostgreSQL) — R1 / R2 / R3', () => {
       expect(operationA!.getSnapshot().config.displayName).toBe('op-agent');
       expect(Object.isFrozen(operationA!.getSnapshot())).toBe(true);
     });
+
+    it('resolves a legacy pinned assignment to the identity current version', async () => {
+      await db.insert(users).values({ id: 'pin-user' });
+      await seedPublishedAgent('pin-agent');
+      await db.insert(platformAgentVersions).values({
+        agentId: 'pin-agent',
+        checksum: 'd'.repeat(64),
+        config: config('pin-agent-v2'),
+        dependencySnapshot,
+        id: 'pin-agent-v2',
+        version: '2.0.0',
+      });
+      await db
+        .update(platformAgents)
+        .set({ currentVersionId: 'pin-agent-v2', publishedAt: new Date(), revision: 2 })
+        .where(eq(platformAgents.id, 'pin-agent'));
+      await db.insert(platformAgentAssignments).values({
+        agentId: 'pin-agent',
+        enabled: true,
+        id: 'pin-assign',
+        mode: 'optional',
+        pinnedVersionId: 'pin-agent-v1',
+        status: 'active',
+        targetId: '__global__',
+        targetType: 'global',
+        versionPolicy: 'pinned',
+      });
+
+      const listed = await resolver().getEffectiveList('pin-user');
+      expect(listed.agents).toEqual([
+        expect.objectContaining({ platformAgentId: 'pin-agent', versionId: 'pin-agent-v2' }),
+      ]);
+      const operation = await resolver().beginOperation('pin-user', 'pin-agent');
+      expect(operation!.getSnapshot().versionId).toBe('pin-agent-v2');
+    });
   });
 
   // R1-01: a hidden preference must never permanently block archive.
